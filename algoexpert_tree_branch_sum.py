@@ -1,25 +1,28 @@
-# This is an input class. Do not edit.
+# This is the class of the input root. Do not edit it.
 class BinaryTree:
-    def __init__(self, value, left=None, right=None):
+    def __init__(self, value):
         self.value = value
-        self.left = left
-        self.right = right
+        self.left = None
+        self.right = None
 
 
-def evaluateExpressionTree(tree):
+def branchSums(root):
     # Write your code here.
-    if tree is None:
-        return 0
-    if tree.value>-1:
-        return tree.value
-    left = evaluateExpressionTree(tree.left)
-    right = evaluateExpressionTree(tree.right)
-    if(tree.value == -1):
-        return left+right
-    if(tree.value ==-2):
-        return left- right
-    if(tree.value ==-3):
-        return int(left/right)
-    return left*right
-        
+    sums = list()
+    calcBranchSums(root, 0, sums)
+    return sums
+
+def calcBranchSums(node, run_sum, sums):
+    if node is None:
+        return 
+    newRunSum = run_sum+ node.value
+    if(node.left is None and node.right is None):
+        sums.append(newRunSum)
+        return
+    calcBranchSums(node.left, newRunSum, sums)
+    calcBranchSums(node.right, newRunSum, sums)
+
     
+
+    
+        
