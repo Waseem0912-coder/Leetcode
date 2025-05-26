@@ -1,118 +1,6 @@
-package com.example.camerax2.ui.theme
+NEW camera ui
 
-import androidx.compose.ui.graphics.Color
-
-val Purple80 = Color(0xFFD0BCFF)
-val PurpleGrey80 = Color(0xFFCCC2DC)
-val Pink80 = Color(0xFFEFB8C8)
-
-val Purple40 = Color(0xFF6650a4)
-val PurpleGrey40 = Color(0xFF625b71)
-val Pink40 = Color(0xFF7D5260)
-
-
-----
-
-package com.example.camerax2.ui.theme
-
-import android.app.Activity
-import android.os.Build
-import androidx.compose.foundation.isSystemInDarkTheme
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.darkColorScheme
-import androidx.compose.material3.dynamicDarkColorScheme
-import androidx.compose.material3.dynamicLightColorScheme
-import androidx.compose.material3.lightColorScheme
-import androidx.compose.runtime.Composable
-import androidx.compose.ui.platform.LocalContext
-
-private val DarkColorScheme = darkColorScheme(
-    primary = Purple80,
-    secondary = PurpleGrey80,
-    tertiary = Pink80
-)
-
-private val LightColorScheme = lightColorScheme(
-    primary = Purple40,
-    secondary = PurpleGrey40,
-    tertiary = Pink40
-
-    /* Other default colors to override
-    background = Color(0xFFFFFBFE),
-    surface = Color(0xFFFFFBFE),
-    onPrimary = Color.White,
-    onSecondary = Color.White,
-    onTertiary = Color.White,
-    onBackground = Color(0xFF1C1B1F),
-    onSurface = Color(0xFF1C1B1F),
-    */
-)
-
-@Composable
-fun CameraX2Theme(
-    darkTheme: Boolean = isSystemInDarkTheme(),
-    // Dynamic color is available on Android 12+
-    dynamicColor: Boolean = true,
-    content: @Composable () -> Unit
-) {
-    val colorScheme = when {
-        dynamicColor && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S -> {
-            val context = LocalContext.current
-            if (darkTheme) dynamicDarkColorScheme(context) else dynamicLightColorScheme(context)
-        }
-
-        darkTheme -> DarkColorScheme
-        else -> LightColorScheme
-    }
-
-    MaterialTheme(
-        colorScheme = colorScheme,
-        typography = Typography,
-        content = content
-    )
-}
-
-----
-
-package com.example.camerax2.ui.theme
-
-import androidx.compose.material3.Typography
-import androidx.compose.ui.text.TextStyle
-import androidx.compose.ui.text.font.FontFamily
-import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.unit.sp
-
-// Set of Material typography styles to start with
-val Typography = Typography(
-    bodyLarge = TextStyle(
-        fontFamily = FontFamily.Default,
-        fontWeight = FontWeight.Normal,
-        fontSize = 16.sp,
-        lineHeight = 24.sp,
-        letterSpacing = 0.5.sp
-    )
-    /* Other default text styles to override
-    titleLarge = TextStyle(
-        fontFamily = FontFamily.Default,
-        fontWeight = FontWeight.Normal,
-        fontSize = 22.sp,
-        lineHeight = 28.sp,
-        letterSpacing = 0.sp
-    ),
-    labelSmall = TextStyle(
-        fontFamily = FontFamily.Default,
-        fontWeight = FontWeight.Medium,
-        fontSize = 11.sp,
-        lineHeight = 16.sp,
-        letterSpacing = 0.5.sp
-    )
-    */
-)
-
-
-----
-
-activity _main .xml
+activity_main.xml
 
 <?xml version="1.0" encoding="utf-8"?>
 <androidx.constraintlayout.widget.ConstraintLayout xmlns:android="http://schemas.android.com/apk/res/android"
@@ -120,6 +8,7 @@ activity _main .xml
     xmlns:tools="http://schemas.android.com/tools"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
+    android:background="@color/black"
     tools:context=".MainActivity">
 
     <!-- Camera Preview -->
@@ -127,18 +16,106 @@ activity _main .xml
         android:id="@+id/previewView"
         android:layout_width="0dp"
         android:layout_height="0dp"
-        app:layout_constraintBottom_toTopOf="@+id/controlsScrollView"
+        app:layout_constraintBottom_toBottomOf="parent"
         app:layout_constraintEnd_toEndOf="parent"
         app:layout_constraintStart_toStartOf="parent"
         app:layout_constraintTop_toTopOf="parent" />
 
-    <!-- Controls ScrollView -->
-    <ScrollView
-        android:id="@+id/controlsScrollView"
+    <!-- Top Controls Bar -->
+    <LinearLayout
+        android:id="@+id/topControlsBar"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:background="#CC000000"
-        app:layout_constraintBottom_toTopOf="@+id/buttonsLayout"
+        android:background="@drawable/gradient_overlay_top"
+        android:orientation="horizontal"
+        android:padding="16dp"
+        app:layout_constraintEnd_toEndOf="parent"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintTop_toTopOf="parent">
+
+        <!-- Flash Control -->
+        <LinearLayout
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:gravity="center"
+            android:orientation="vertical">
+
+            <ImageButton
+                android:id="@+id/flashButton"
+                android:layout_width="40dp"
+                android:layout_height="40dp"
+                android:background="@drawable/control_button_background"
+                android:padding="8dp"
+                android:src="@drawable/ic_flash_auto"
+                android:tint="@color/white" />
+
+            <Spinner
+                android:id="@+id/flashModeSpinner"
+                android:layout_width="wrap_content"
+                android:layout_height="0dp"
+                android:visibility="gone" />
+        </LinearLayout>
+
+        <!-- White Balance Control -->
+        <LinearLayout
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:gravity="center"
+            android:orientation="vertical">
+
+            <ImageButton
+                android:id="@+id/whiteBalanceButton"
+                android:layout_width="40dp"
+                android:layout_height="40dp"
+                android:background="@drawable/control_button_background"
+                android:padding="8dp"
+                android:src="@drawable/ic_wb_auto"
+                android:tint="@color/white" />
+
+            <Spinner
+                android:id="@+id/whiteBalanceSpinner"
+                android:layout_width="wrap_content"
+                android:layout_height="0dp"
+                android:visibility="gone" />
+        </LinearLayout>
+
+        <!-- Grid Lines Toggle -->
+        <ImageButton
+            android:id="@+id/gridButton"
+            android:layout_width="40dp"
+            android:layout_height="40dp"
+            android:layout_weight="1"
+            android:background="@drawable/control_button_background"
+            android:padding="8dp"
+            android:src="@drawable/ic_grid"
+            android:tint="@color/white" />
+
+        <!-- Settings -->
+        <ImageButton
+            android:id="@+id/settingsButton"
+            android:layout_width="40dp"
+            android:layout_height="40dp"
+            android:layout_weight="1"
+            android:background="@drawable/control_button_background"
+            android:padding="8dp"
+            android:src="@drawable/ic_settings"
+            android:tint="@color/white" />
+
+    </LinearLayout>
+
+    <!-- Manual Controls Panel -->
+    <androidx.cardview.widget.CardView
+        android:id="@+id/manualControlsCard"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_margin="16dp"
+        android:visibility="visible"
+        app:cardBackgroundColor="#E6000000"
+        app:cardCornerRadius="16dp"
+        app:cardElevation="8dp"
+        app:layout_constraintBottom_toTopOf="@+id/bottomControlsBar"
         app:layout_constraintEnd_toEndOf="parent"
         app:layout_constraintStart_toStartOf="parent">
 
@@ -148,314 +125,555 @@ activity _main .xml
             android:orientation="vertical"
             android:padding="16dp">
 
-            <!-- EV Compensation -->
-            <TextView
-                android:id="@+id/evLabel"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:text="EV Compensation"
-                android:textColor="@android:color/white"
-                android:visibility="gone" />
-
+            <!-- ISO Control -->
             <LinearLayout
+                android:id="@+id/isoControl"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:orientation="horizontal">
+                android:layout_marginBottom="12dp"
+                android:orientation="horizontal"
+                android:visibility="gone">
 
-                <SeekBar
-                    android:id="@+id/evSeekBar"
-                    android:layout_width="0dp"
-                    android:layout_height="wrap_content"
-                    android:layout_weight="1"
-                    android:visibility="gone" />
+                <ImageView
+                    android:layout_width="24dp"
+                    android:layout_height="24dp"
+                    android:layout_gravity="center_vertical"
+                    android:src="@drawable/ic_iso"
+                    android:tint="@color/white" />
 
                 <TextView
-                    android:id="@+id/evValueText"
-                    android:layout_width="wrap_content"
+                    android:layout_width="48dp"
                     android:layout_height="wrap_content"
+                    android:layout_gravity="center_vertical"
                     android:layout_marginStart="8dp"
-                    android:text="0.0"
-                    android:textColor="@android:color/white"
-                    android:visibility="gone" />
-            </LinearLayout>
-
-            <!-- Zoom -->
-            <TextView
-                android:id="@+id/zoomLabel"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="8dp"
-                android:text="Zoom"
-                android:textColor="@android:color/white"
-                android:visibility="gone" />
-
-            <LinearLayout
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:orientation="horizontal">
-
-                <SeekBar
-                    android:id="@+id/zoomSeekBar"
-                    android:layout_width="0dp"
-                    android:layout_height="wrap_content"
-                    android:layout_weight="1"
-                    android:visibility="gone" />
-
-                <TextView
-                    android:id="@+id/zoomValueText"
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:layout_marginStart="8dp"
-                    android:text="1.0x"
-                    android:textColor="@android:color/white"
-                    android:visibility="gone" />
-            </LinearLayout>
-
-            <!-- Flash Mode -->
-            <TextView
-                android:id="@+id/flashLabel"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="8dp"
-                android:text="Flash Mode"
-                android:textColor="@android:color/white"
-                android:visibility="gone" />
-
-            <Spinner
-                android:id="@+id/flashModeSpinner"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:visibility="gone" />
-
-            <!-- Focus -->
-            <TextView
-                android:id="@+id/focusLabel"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="8dp"
-                android:text="Focus"
-                android:textColor="@android:color/white"
-                android:visibility="gone" />
-
-            <LinearLayout
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:orientation="horizontal">
-
-                <SeekBar
-                    android:id="@+id/focusSeekBar"
-                    android:layout_width="0dp"
-                    android:layout_height="wrap_content"
-                    android:layout_weight="1"
-                    android:visibility="gone" />
-
-                <TextView
-                    android:id="@+id/focusValueText"
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:layout_marginStart="8dp"
-                    android:text="Auto"
-                    android:textColor="@android:color/white"
-                    android:visibility="gone" />
-            </LinearLayout>
-
-            <!-- ISO -->
-            <TextView
-                android:id="@+id/isoLabel"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="8dp"
-                android:text="ISO"
-                android:textColor="@android:color/white"
-                android:visibility="gone" />
-
-            <LinearLayout
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:orientation="horizontal">
+                    android:text="ISO"
+                    android:textColor="@color/white"
+                    android:textSize="12sp" />
 
                 <SeekBar
                     android:id="@+id/isoSeekBar"
                     android:layout_width="0dp"
                     android:layout_height="wrap_content"
+                    android:layout_gravity="center_vertical"
+                    android:layout_marginStart="8dp"
+                    android:layout_marginEnd="8dp"
                     android:layout_weight="1"
-                    android:visibility="gone" />
+                    android:progressTint="@color/accent_orange"
+                    android:thumbTint="@color/accent_orange" />
 
                 <TextView
                     android:id="@+id/isoValueText"
-                    android:layout_width="wrap_content"
+                    android:layout_width="60dp"
                     android:layout_height="wrap_content"
-                    android:layout_marginStart="8dp"
+                    android:layout_gravity="center_vertical"
+                    android:gravity="end"
                     android:text="Auto"
-                    android:textColor="@android:color/white"
-                    android:visibility="gone" />
+                    android:textColor="@color/accent_orange"
+                    android:textSize="14sp"
+                    android:textStyle="bold" />
             </LinearLayout>
 
-            <!-- Shutter Speed -->
-            <TextView
-                android:id="@+id/shutterSpeedLabel"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="8dp"
-                android:text="Shutter Speed"
-                android:textColor="@android:color/white"
-                android:visibility="gone" />
-
+            <!-- Shutter Speed Control -->
             <LinearLayout
+                android:id="@+id/shutterControl"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:orientation="horizontal">
+                android:layout_marginBottom="12dp"
+                android:orientation="horizontal"
+                android:visibility="gone">
+
+                <ImageView
+                    android:layout_width="24dp"
+                    android:layout_height="24dp"
+                    android:layout_gravity="center_vertical"
+                    android:src="@drawable/ic_shutter"
+                    android:tint="@color/white" />
+
+                <TextView
+                    android:layout_width="48dp"
+                    android:layout_height="wrap_content"
+                    android:layout_gravity="center_vertical"
+                    android:layout_marginStart="8dp"
+                    android:text="Speed"
+                    android:textColor="@color/white"
+                    android:textSize="12sp" />
 
                 <SeekBar
                     android:id="@+id/shutterSpeedSeekBar"
                     android:layout_width="0dp"
                     android:layout_height="wrap_content"
+                    android:layout_gravity="center_vertical"
+                    android:layout_marginStart="8dp"
+                    android:layout_marginEnd="8dp"
                     android:layout_weight="1"
-                    android:visibility="gone" />
+                    android:progressTint="@color/accent_blue"
+                    android:thumbTint="@color/accent_blue" />
 
                 <TextView
                     android:id="@+id/shutterSpeedValueText"
-                    android:layout_width="wrap_content"
+                    android:layout_width="60dp"
                     android:layout_height="wrap_content"
-                    android:layout_marginStart="8dp"
+                    android:layout_gravity="center_vertical"
+                    android:gravity="end"
                     android:text="Auto"
-                    android:textColor="@android:color/white"
-                    android:visibility="gone" />
+                    android:textColor="@color/accent_blue"
+                    android:textSize="14sp"
+                    android:textStyle="bold" />
             </LinearLayout>
 
-            <!-- White Balance -->
-            <TextView
-                android:id="@+id/whiteBalanceLabel"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="8dp"
-                android:text="White Balance"
-                android:textColor="@android:color/white"
-                android:visibility="gone" />
-
-            <Spinner
-                android:id="@+id/whiteBalanceSpinner"
+            <!-- EV Compensation Control -->
+            <LinearLayout
+                android:id="@+id/evControl"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:visibility="gone" />
+                android:layout_marginBottom="12dp"
+                android:orientation="horizontal"
+                android:visibility="gone">
+
+                <ImageView
+                    android:layout_width="24dp"
+                    android:layout_height="24dp"
+                    android:layout_gravity="center_vertical"
+                    android:src="@drawable/ic_exposure"
+                    android:tint="@color/white" />
+
+                <TextView
+                    android:layout_width="48dp"
+                    android:layout_height="wrap_content"
+                    android:layout_gravity="center_vertical"
+                    android:layout_marginStart="8dp"
+                    android:text="EV"
+                    android:textColor="@color/white"
+                    android:textSize="12sp" />
+
+                <SeekBar
+                    android:id="@+id/evSeekBar"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_gravity="center_vertical"
+                    android:layout_marginStart="8dp"
+                    android:layout_marginEnd="8dp"
+                    android:layout_weight="1"
+                    android:progressTint="@color/accent_yellow"
+                    android:thumbTint="@color/accent_yellow" />
+
+                <TextView
+                    android:id="@+id/evValueText"
+                    android:layout_width="60dp"
+                    android:layout_height="wrap_content"
+                    android:layout_gravity="center_vertical"
+                    android:gravity="end"
+                    android:text="0.0"
+                    android:textColor="@color/accent_yellow"
+                    android:textSize="14sp"
+                    android:textStyle="bold" />
+            </LinearLayout>
+
+            <!-- Focus Control -->
+            <LinearLayout
+                android:id="@+id/focusControl"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginBottom="12dp"
+                android:orientation="horizontal"
+                android:visibility="gone">
+
+                <ImageView
+                    android:layout_width="24dp"
+                    android:layout_height="24dp"
+                    android:layout_gravity="center_vertical"
+                    android:src="@drawable/ic_focus"
+                    android:tint="@color/white" />
+
+                <TextView
+                    android:layout_width="48dp"
+                    android:layout_height="wrap_content"
+                    android:layout_gravity="center_vertical"
+                    android:layout_marginStart="8dp"
+                    android:text="Focus"
+                    android:textColor="@color/white"
+                    android:textSize="12sp" />
+
+                <SeekBar
+                    android:id="@+id/focusSeekBar"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_gravity="center_vertical"
+                    android:layout_marginStart="8dp"
+                    android:layout_marginEnd="8dp"
+                    android:layout_weight="1"
+                    android:progressTint="@color/accent_green"
+                    android:thumbTint="@color/accent_green" />
+
+                <TextView
+                    android:id="@+id/focusValueText"
+                    android:layout_width="60dp"
+                    android:layout_height="wrap_content"
+                    android:layout_gravity="center_vertical"
+                    android:gravity="end"
+                    android:text="Auto"
+                    android:textColor="@color/accent_green"
+                    android:textSize="14sp"
+                    android:textStyle="bold" />
+            </LinearLayout>
+
+            <!-- Zoom Control -->
+            <LinearLayout
+                android:id="@+id/zoomControl"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal"
+                android:visibility="gone">
+
+                <ImageView
+                    android:layout_width="24dp"
+                    android:layout_height="24dp"
+                    android:layout_gravity="center_vertical"
+                    android:src="@drawable/ic_zoom"
+                    android:tint="@color/white" />
+
+                <TextView
+                    android:layout_width="48dp"
+                    android:layout_height="wrap_content"
+                    android:layout_gravity="center_vertical"
+                    android:layout_marginStart="8dp"
+                    android:text="Zoom"
+                    android:textColor="@color/white"
+                    android:textSize="12sp" />
+
+                <SeekBar
+                    android:id="@+id/zoomSeekBar"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_gravity="center_vertical"
+                    android:layout_marginStart="8dp"
+                    android:layout_marginEnd="8dp"
+                    android:layout_weight="1"
+                    android:progressTint="@color/accent_purple"
+                    android:thumbTint="@color/accent_purple" />
+
+                <TextView
+                    android:id="@+id/zoomValueText"
+                    android:layout_width="60dp"
+                    android:layout_height="wrap_content"
+                    android:layout_gravity="center_vertical"
+                    android:gravity="end"
+                    android:text="1.0x"
+                    android:textColor="@color/accent_purple"
+                    android:textSize="14sp"
+                    android:textStyle="bold" />
+            </LinearLayout>
 
         </LinearLayout>
-    </ScrollView>
 
-    <!-- Buttons Layout -->
-    <LinearLayout
-        android:id="@+id/buttonsLayout"
-        android:layout_width="match_parent"
+    </androidx.cardview.widget.CardView>
+
+    <!-- Hidden TextViews for Labels (kept for compatibility) -->
+    <TextView
+        android:id="@+id/evLabel"
+        android:layout_width="wrap_content"
         android:layout_height="wrap_content"
-        android:background="#CC000000"
+        android:visibility="gone" />
+
+    <TextView
+        android:id="@+id/zoomLabel"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:visibility="gone" />
+
+    <TextView
+        android:id="@+id/flashLabel"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:visibility="gone" />
+
+    <TextView
+        android:id="@+id/focusLabel"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:visibility="gone" />
+
+    <TextView
+        android:id="@+id/isoLabel"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:visibility="gone" />
+
+    <TextView
+        android:id="@+id/shutterSpeedLabel"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:visibility="gone" />
+
+    <TextView
+        android:id="@+id/whiteBalanceLabel"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:visibility="gone" />
+
+    <!-- Bottom Controls Bar -->
+    <LinearLayout
+        android:id="@+id/bottomControlsBar"
+        android:layout_width="match_parent"
+        android:layout_height="120dp"
+        android:background="@drawable/gradient_overlay_bottom"
+        android:gravity="center"
         android:orientation="horizontal"
-        android:padding="16dp"
+        android:paddingStart="32dp"
+        android:paddingEnd="32dp"
         app:layout_constraintBottom_toBottomOf="parent"
         app:layout_constraintEnd_toEndOf="parent"
         app:layout_constraintStart_toStartOf="parent">
 
-        <Button
-            android:id="@+id/switchCameraButton"
-            android:layout_width="0dp"
-            android:layout_height="wrap_content"
-            android:layout_marginEnd="8dp"
-            android:layout_weight="1"
-            android:text="Switch Camera" />
+        <!-- Gallery Button -->
+        <com.google.android.material.card.MaterialCardView
+            android:id="@+id/galleryButton"
+            android:layout_width="56dp"
+            android:layout_height="56dp"
+            android:layout_marginEnd="48dp"
+            android:clickable="true"
+            android:focusable="true"
+            app:cardBackgroundColor="#33FFFFFF"
+            app:cardCornerRadius="12dp"
+            app:cardElevation="0dp"
+            app:strokeColor="#66FFFFFF"
+            app:strokeWidth="2dp">
 
-        <Button
+            <ImageView
+                android:layout_width="32dp"
+                android:layout_height="32dp"
+                android:layout_gravity="center"
+                android:src="@drawable/ic_gallery"
+                android:tint="@color/white" />
+
+        </com.google.android.material.card.MaterialCardView>
+
+        <!-- Capture Button -->
+        <com.google.android.material.button.MaterialButton
             android:id="@+id/captureButton"
-            android:layout_width="0dp"
-            android:layout_height="wrap_content"
-            android:layout_marginStart="8dp"
-            android:layout_weight="1"
-            android:text="Capture" />
+            android:layout_width="80dp"
+            android:layout_height="80dp"
+            android:insetLeft="0dp"
+            android:insetTop="0dp"
+            android:insetRight="0dp"
+            android:insetBottom="0dp"
+            app:backgroundTint="@color/white"
+            app:cornerRadius="40dp"
+            app:elevation="8dp"
+            app:icon="@drawable/ic_camera_shutter"
+            app:iconGravity="textStart"
+            app:iconPadding="0dp"
+            app:iconSize="40dp"
+            app:iconTint="@color/black"
+            app:strokeColor="#33000000"
+            app:strokeWidth="3dp" />
+
+        <!-- Switch Camera Button -->
+        <com.google.android.material.card.MaterialCardView
+            android:id="@+id/switchCameraButton"
+            android:layout_width="56dp"
+            android:layout_height="56dp"
+            android:layout_marginStart="48dp"
+            android:clickable="true"
+            android:focusable="true"
+            app:cardBackgroundColor="#33FFFFFF"
+            app:cardCornerRadius="12dp"
+            app:cardElevation="0dp"
+            app:strokeColor="#66FFFFFF"
+            app:strokeWidth="2dp">
+
+            <ImageView
+                android:layout_width="32dp"
+                android:layout_height="32dp"
+                android:layout_gravity="center"
+                android:src="@drawable/ic_switch_camera"
+                android:tint="@color/white" />
+
+        </com.google.android.material.card.MaterialCardView>
 
     </LinearLayout>
+
+    <!-- Mode Selector -->
+    <HorizontalScrollView
+        android:id="@+id/modeSelectorScrollView"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginBottom="8dp"
+        android:scrollbars="none"
+        app:layout_constraintBottom_toTopOf="@+id/bottomControlsBar"
+        app:layout_constraintEnd_toEndOf="parent"
+        app:layout_constraintStart_toStartOf="parent">
+
+        <com.google.android.material.chip.ChipGroup
+            android:id="@+id/modeChipGroup"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:paddingStart="16dp"
+            android:paddingEnd="16dp"
+            app:chipSpacingHorizontal="8dp"
+            app:selectionRequired="true"
+            app:singleSelection="true">
+
+            <com.google.android.material.chip.Chip
+                android:id="@+id/autoModeChip"
+                style="@style/Widget.Material3.Chip.Filter"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="AUTO"
+                android:textColor="@color/white"
+                app:chipBackgroundColor="@color/chip_background_selector"
+                app:chipStrokeColor="@color/chip_stroke_selector" />
+
+            <com.google.android.material.chip.Chip
+                android:id="@+id/proModeChip"
+                style="@style/Widget.Material3.Chip.Filter"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:checked="true"
+                android:text="PRO"
+                android:textColor="@color/white"
+                app:chipBackgroundColor="@color/chip_background_selector"
+                app:chipStrokeColor="@color/chip_stroke_selector" />
+
+            <com.google.android.material.chip.Chip
+                android:id="@+id/portraitModeChip"
+                style="@style/Widget.Material3.Chip.Filter"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="PORTRAIT"
+                android:textColor="@color/white"
+                app:chipBackgroundColor="@color/chip_background_selector"
+                app:chipStrokeColor="@color/chip_stroke_selector" />
+
+            <com.google.android.material.chip.Chip
+                android:id="@+id/nightModeChip"
+                style="@style/Widget.Material3.Chip.Filter"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="NIGHT"
+                android:textColor="@color/white"
+                app:chipBackgroundColor="@color/chip_background_selector"
+                app:chipStrokeColor="@color/chip_stroke_selector" />
+
+            <com.google.android.material.chip.Chip
+                android:id="@+id/videoModeChip"
+                style="@style/Widget.Material3.Chip.Filter"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="VIDEO"
+                android:textColor="@color/white"
+                app:chipBackgroundColor="@color/chip_background_selector"
+                app:chipStrokeColor="@color/chip_stroke_selector" />
+
+        </com.google.android.material.chip.ChipGroup>
+
+    </HorizontalScrollView>
 
 </androidx.constraintlayout.widget.ConstraintLayout>
 
 
 ----
-gradle
 
-plugins {
-    alias(libs.plugins.android.application)
-    alias(libs.plugins.kotlin.android)
-    alias(libs.plugins.kotlin.compose)
-}
+colors.xml
 
-android {
-    buildFeatures {
-        viewBinding = true
-    }
-    namespace = "com.example.camerax2"
-    compileSdk = 35
-
-    defaultConfig {
-        applicationId = "com.example.camerax2"
-        minSdk = 26
-        targetSdk = 35
-        versionCode = 1
-        versionName = "1.0"
-
-        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
-    }
-
-    buildTypes {
-        release {
-            isMinifyEnabled = false
-            proguardFiles(
-                getDefaultProguardFile("proguard-android-optimize.txt"),
-                "proguard-rules.pro"
-            )
-        }
-    }
-    compileOptions {
-        sourceCompatibility = JavaVersion.VERSION_11
-        targetCompatibility = JavaVersion.VERSION_11
-    }
-    kotlinOptions {
-        jvmTarget = "11"
-    }
-    buildFeatures {
-        compose = true
-    }
-}
-
-dependencies {
-
-    implementation(libs.androidx.core.ktx)
-    implementation(libs.androidx.lifecycle.runtime.ktx)
-    implementation(libs.androidx.activity.compose)
-    implementation(platform(libs.androidx.compose.bom))
-    implementation(libs.androidx.ui)
-    implementation(libs.androidx.ui.graphics)
-    implementation(libs.androidx.ui.tooling.preview)
-    implementation(libs.androidx.material3)
-    implementation(libs.androidx.camera.core)
-    implementation(libs.androidx.camera.camera2)
-    implementation(libs.androidx.camera.lifecycle)
-    implementation(libs.androidx.camera.view)
-    implementation(libs.androidx.camera.extensions)
-    testImplementation(libs.junit)
-    androidTestImplementation(libs.androidx.junit)
-    androidTestImplementation(libs.androidx.espresso.core)
-    androidTestImplementation(platform(libs.androidx.compose.bom))
-    androidTestImplementation(libs.androidx.ui.test.junit4)
-    debugImplementation(libs.androidx.ui.tooling)
-    debugImplementation(libs.androidx.ui.test.manifest)
-    val cameraxVersion = "1.3.1" // Check for the latest version
-    implementation("androidx.camera:camera-core:${cameraxVersion}")
-    implementation("androidx.camera:camera-camera2:${cameraxVersion}") // For Camera2 interop
-    implementation("androidx.camera:camera-lifecycle:${cameraxVersion}")
-    implementation("androidx.camera:camera-video:${cameraxVersion}") // If you plan video
-    implementation("androidx.camera:camera-view:${cameraxVersion}")
-    implementation("androidx.camera:camera-extensions:${cameraxVersion}") // For vendor extensions
-    implementation("androidx.constraintlayout:constraintlayout:2.1.4")
-    implementation("androidx.core:core-ktx:1.12.0")
-    implementation("androidx.appcompat:appcompat:1.6.1")
-    implementation("com.google.android.material:material:1.11.0")
-    implementation("androidx.constraintlayout:constraintlayout:2.1.4")
-}
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Primary Colors -->
+    <color name="purple_200">#FFBB86FC</color>
+    <color name="purple_500">#FF6200EE</color>
+    <color name="purple_700">#FF3700B3</color>
+    <color name="teal_200">#FF03DAC5</color>
+    <color name="teal_700">#FF018786</color>
+    <color name="black">#FF000000</color>
+    <color name="white">#FFFFFFFF</color>
+    
+    <!-- Camera UI Colors -->
+    <color name="accent_orange">#FFFF6E40</color>
+    <color name="accent_blue">#FF40C4FF</color>
+    <color name="accent_yellow">#FFFFAB40</color>
+    <color name="accent_green">#FF00E676</color>
+    <color name="accent_purple">#FFE040FB</color>
+    
+    <!-- Overlay Colors -->
+    <color name="overlay_dark">#E6000000</color>
+    <color name="overlay_light">#33FFFFFF</color>
+    <color name="control_background">#66000000</color>
+    
+    <!-- Material You inspired colors -->
+    <color name="surface_dark">#1A1A1A</color>
+    <color name="on_surface">#E1E1E1</color>
+    <color name="surface_variant">#2D2D2D</color>
+</resources>
 
 
+--------------
+gradient_overlay_top.xml
+
+<?xml version="1.0" encoding="utf-8"?>
+<shape xmlns:android="http://schemas.android.com/apk/res/android">
+    <gradient
+        android:angle="270"
+        android:endColor="#00000000"
+        android:startColor="#CC000000"
+        android:type="linear" />
+</shape>
+
+--------------
+
+gradient_overlay_bottom.xml
+
+<?xml version="1.0" encoding="utf-8"?>
+<shape xmlns:android="http://schemas.android.com/apk/res/android">
+    <gradient
+        android:angle="90"
+        android:endColor="#00000000"
+        android:startColor="#CC000000"
+        android:type="linear" />
+</shape>
+---
+
+
+control_button_background.xml
+
+<?xml version="1.0" encoding="utf-8"?>
+<ripple xmlns:android="http://schemas.android.com/apk/res/android"
+    android:color="@color/white">
+    <item>
+        <shape android:shape="oval">
+            <solid android:color="#33FFFFFF" />
+        </shape>
+    </item>
+</ripple>
+---
+
+chip_background_selector.xml
+
+<?xml version="1.0" encoding="utf-8"?>
+<selector xmlns:android="http://schemas.android.com/apk/res/android">
+    <item android:color="#66FFFFFF" android:state_checked="true" />
+    <item android:color="#1AFFFFFF" />
+
+--------------
+
+chip_stroke_selector.xml
+
+<?xml version="1.0" encoding="utf-8"?>
+<selector xmlns:android="http://schemas.android.com/apk/res/android">
+    <item android:color="@color/white" android:state_checked="true" />
+    <item android:color="#66FFFFFF" />
+</selector>
+
+------------------
+
+ic_flash_auto.xml
+
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M3,2V4H5L8.56,11.59L5.1,17.64C4.52,18.62 5.21,20 6.34,20H19V18H6.34L9,13.5H15.55C16.3,13.5 16.96,13.09 17.3,12.47L20.88,6.5C21.25,5.82 20.77,5 20,5H10.21L9.27,3C8.94,2.38 8.3,2 7.6,2H3M7,13.5V17.5H11V13.5H7M17.5,9.5L12.5,14.5V11H10
+
+</selector>
