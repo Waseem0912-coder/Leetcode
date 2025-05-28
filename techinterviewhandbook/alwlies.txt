@@ -1,927 +1,171 @@
-androidmanifest.xml
-
-<?xml version="1.0" encoding="utf-8"?>
-<manifest xmlns:android="http://schemas.android.com/apk/res/android"
-    package="com.example.camerax2">
-
-    <!-- Camera permission -->
-    <uses-permission android:name="android.permission.CAMERA" />
-
-    <!-- Storage permissions for saving photos -->
-    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE"
-        android:maxSdkVersion="28" />
-
-    <!-- Camera features -->
-    <uses-feature android:name="android.hardware.camera.any" />
-    <uses-feature android:name="android.hardware.camera.autofocus" />
-
-    <application
-        android:allowBackup="true"
-        android:icon="@mipmap/ic_launcher"
-        android:label="@string/app_name"
-        android:roundIcon="@mipmap/ic_launcher_round"
-        android:supportsRtl="true"
-        android:theme="@style/Theme.CameraX2">  <!-- This is the important line -->
-        <activity
-            android:name=".MainActivity"
-            android:exported="true">
-            <intent-filter>
-                <action android:name="android.intent.action.MAIN" />
-                <category android:name="android.intent.category.LAUNCHER" />
-            </intent-filter>
-        </activity>
-    </application>
-
-</manifest>
-
-main activity.kt
-
-package com.example.camerax2 // CHANGE THIS TO YOUR PROJECT'S PACKAGE NAME
-
-import android.Manifest
-import android.annotation.SuppressLint
-import android.content.ContentValues
-import android.content.pm.PackageManager
-import android.hardware.camera2.CameraCharacteristics
-import android.hardware.camera2.CameraMetadata
-import android.hardware.camera2.CaptureRequest
-import android.os.Build
-import android.os.Bundle
-import android.provider.MediaStore
-import android.util.Log
-import android.util.Range
-import android.view.MotionEvent
-import android.view.View
-import android.widget.AdapterView
-import android.widget.ArrayAdapter
-import android.widget.SeekBar
-import android.widget.Toast
-import androidx.appcompat.app.AppCompatActivity
-import androidx.camera.camera2.interop.Camera2CameraControl
-import androidx.camera.camera2.interop.Camera2CameraInfo
-import androidx.camera.camera2.interop.CaptureRequestOptions
-import androidx.camera.core.*
-import androidx.camera.lifecycle.ProcessCameraProvider
-import androidx.core.app.ActivityCompat
-import androidx.core.content.ContextCompat
-import com.example.camerax2.databinding.ActivityMainBinding
-import java.text.SimpleDateFormat
-import java.util.*
-import java.util.concurrent.ExecutorService
-import java.util.concurrent.Executors
-
-class MainActivity : AppCompatActivity() {
-
-    private lateinit var binding: ActivityMainBinding
-    private lateinit var cameraExecutor: ExecutorService
-
-    private var imageCapture: ImageCapture? = null
-    private var camera: Camera? = null
-    private var cameraProvider: ProcessCameraProvider? = null
-    private var cameraSelector = CameraSelector.DEFAULT_BACK_CAMERA
-
-    @SuppressLint("UnsafeOptInUsageError")
-    private var camera2CameraControl: Camera2CameraControl? = null
-
-    private var isoRange: Range<Int>? = null
-    private var exposureTimeRange: Range<Long>? = null
-    private var minFocusDistance: Float = 0f
-
-    // Store ISO bounds separately for easier access
-    private var isoLower: Int = 0
-    private var isoUpper: Int = 0
-
-    companion object {
-        private const val TAG = "camerax2"
-        private const val FILENAME_FORMAT = "yyyy-MM-dd-HH-mm-ss-SSS"
-        private const val REQUEST_CODE_PERMISSIONS = 10
-        private val REQUIRED_PERMISSIONS = mutableListOf(
-            Manifest.permission.CAMERA
-        ).apply {
-            if (Build.VERSION.SDK_INT <= Build.VERSION_CODES.P) {
-                add(Manifest.permission.WRITE_EXTERNAL_STORAGE)
-            }
-        }.toTypedArray()
-    }
-
-    override fun onCreate(savedInstanceState: Bundle?) {
-        super.onCreate(savedInstanceState)
-        binding = ActivityMainBinding.inflate(layoutInflater)
-        setContentView(binding.root)
-
-        cameraExecutor = Executors.newSingleThreadExecutor()
-
-        if (allPermissionsGranted()) {
-            startCamera()
-        } else {
-            ActivityCompat.requestPermissions(this, REQUIRED_PERMISSIONS, REQUEST_CODE_PERMISSIONS)
-        }
-
-        binding.captureButton.setOnClickListener { takePhoto() }
-        binding.switchCameraButton.setOnClickListener { switchCamera() }
-
-        setupProControlsListeners()
-    }
-
-    private fun allPermissionsGranted() = REQUIRED_PERMISSIONS.all {
-        ContextCompat.checkSelfPermission(baseContext, it) == PackageManager.PERMISSION_GRANTED
-    }
-
-    override fun onRequestPermissionsResult(
-        requestCode: Int, permissions: Array<String>, grantResults: IntArray
-    ) {
-        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
-        if (requestCode == REQUEST_CODE_PERMISSIONS) {
-            if (allPermissionsGranted()) {
-                startCamera()
-            } else {
-                Toast.makeText(this, "Permissions not granted by the user.", Toast.LENGTH_SHORT).show()
-                finish()
-            }
-        }
-    }
-
-    @SuppressLint("ClickableViewAccessibility")
-    private fun startCamera() {
-        val cameraProviderFuture = ProcessCameraProvider.getInstance(this)
-        cameraProviderFuture.addListener({
-            cameraProvider = cameraProviderFuture.get()
-            bindCameraUseCases()
-        }, ContextCompat.getMainExecutor(this))
-
-        binding.previewView.setOnTouchListener { _, event ->
-            if (event.action == MotionEvent.ACTION_DOWN) {
-                camera?.let { cam ->
-                    val factory = binding.previewView.meteringPointFactory
-                    val point = factory.createPoint(event.x, event.y)
-                    val action = FocusMeteringAction.Builder(point, FocusMeteringAction.FLAG_AF)
-                        .setAutoCancelDuration(5, java.util.concurrent.TimeUnit.SECONDS)
-                        .build()
-                    cam.cameraControl.startFocusAndMetering(action)
-                }
-                return@setOnTouchListener true
-            }
-            false
-        }
-    }
-
-    @SuppressLint("UnsafeOptInUsageError")
-    private fun bindCameraUseCases() {
-        val currentCameraProvider = cameraProvider ?: run {
-            Log.e(TAG, "Camera initialization failed.")
-            Toast.makeText(this, "Camera initialization failed.", Toast.LENGTH_SHORT).show()
-            return
-        }
-
-        val preview = Preview.Builder()
-            .build()
-            .also {
-                it.setSurfaceProvider(binding.previewView.surfaceProvider)
-            }
-
-        imageCapture = ImageCapture.Builder()
-            .setCaptureMode(ImageCapture.CAPTURE_MODE_MAXIMIZE_QUALITY)
-            .build()
-
-        try {
-            currentCameraProvider.unbindAll()
-            camera = currentCameraProvider.bindToLifecycle(
-                this, cameraSelector, preview, imageCapture
-            )
-
-            camera?.let {
-                camera2CameraControl = Camera2CameraControl.from(it.cameraControl)
-            }
-
-            setupCameraInfoAndControls()
-
-        } catch (exc: Exception) {
-            Log.e(TAG, "Use case binding failed", exc)
-            Toast.makeText(this, "Could not start camera: ${exc.message}", Toast.LENGTH_LONG).show()
-        }
-    }
-
-    @SuppressLint("UnsafeOptInUsageError")
-    private fun setupCameraInfoAndControls() {
-        val camInfo = camera?.cameraInfo ?: return
-        val cam2Info = Camera2CameraInfo.from(camInfo)
-
-        // EV Compensation
-        val exposureState = camInfo.exposureState
-        if (exposureState.isExposureCompensationSupported) {
-            val evRange = exposureState.exposureCompensationRange
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                binding.evSeekBar.min = evRange.lower
-            }
-            binding.evSeekBar.max = evRange.upper
-            binding.evSeekBar.progress = exposureState.exposureCompensationIndex - evRange.lower
-            binding.evValueText.text = "%.1f".format(exposureState.exposureCompensationIndex * exposureState.exposureCompensationStep.toFloat())
-            binding.evSeekBar.visibility = View.VISIBLE
-            binding.evLabel.visibility = View.VISIBLE
-            binding.evValueText.visibility = View.VISIBLE
-        } else {
-            binding.evSeekBar.visibility = View.GONE
-            binding.evLabel.visibility = View.GONE
-            binding.evValueText.visibility = View.GONE
-        }
-
-        // Zoom
-        val zoomState = camInfo.zoomState.value
-        if (zoomState != null && (zoomState.maxZoomRatio > zoomState.minZoomRatio)) {
-            val minZoom = (zoomState.minZoomRatio * 10).toInt()
-            val maxZoom = (zoomState.maxZoomRatio * 10).toInt()
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                binding.zoomSeekBar.min = minZoom
-            }
-            binding.zoomSeekBar.max = maxZoom
-            binding.zoomSeekBar.progress = (zoomState.zoomRatio * 10).toInt() - minZoom
-            binding.zoomValueText.text = "%.1fx".format(zoomState.zoomRatio)
-            binding.zoomSeekBar.visibility = View.VISIBLE
-            binding.zoomLabel.visibility = View.VISIBLE
-            binding.zoomValueText.visibility = View.VISIBLE
-        } else {
-            binding.zoomSeekBar.visibility = View.GONE
-            binding.zoomLabel.visibility = View.GONE
-            binding.zoomValueText.visibility = View.GONE
-        }
-
-        // Flash Mode
-        if (camInfo.hasFlashUnit()) {
-            val flashModes = listOf("AUTO", "ON", "OFF")
-            val adapter = ArrayAdapter(this, android.R.layout.simple_spinner_item, flashModes)
-            adapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item)
-            binding.flashModeSpinner.adapter = adapter
-            binding.flashModeSpinner.setSelection(
-                when(imageCapture?.flashMode) {
-                    ImageCapture.FLASH_MODE_ON -> 1
-                    ImageCapture.FLASH_MODE_OFF -> 2
-                    else -> 0
-                }
-            )
-            binding.flashModeSpinner.visibility = View.VISIBLE
-            binding.flashLabel.visibility = View.VISIBLE
-        } else {
-            binding.flashModeSpinner.visibility = View.GONE
-            binding.flashLabel.visibility = View.GONE
-        }
-
-        // Manual Focus
-        minFocusDistance = cam2Info.getCameraCharacteristic(CameraCharacteristics.LENS_INFO_MINIMUM_FOCUS_DISTANCE) ?: 0f
-        val focusSupported = minFocusDistance > 0f ||
-                (cam2Info.getCameraCharacteristic(CameraCharacteristics.LENS_INFO_AVAILABLE_FOCAL_LENGTHS)?.isNotEmpty() == true &&
-                        cam2Info.getCameraCharacteristic(CameraCharacteristics.LENS_INFO_MINIMUM_FOCUS_DISTANCE) != null)
-
-        if (focusSupported) {
-            binding.focusSeekBar.max = 100
-            binding.focusSeekBar.progress = 0
-            binding.focusValueText.text = "Auto"
-            binding.focusSeekBar.visibility = View.VISIBLE
-            binding.focusLabel.visibility = View.VISIBLE
-            binding.focusValueText.visibility = View.VISIBLE
-        } else {
-            binding.focusSeekBar.visibility = View.GONE
-            binding.focusLabel.visibility = View.GONE
-            binding.focusValueText.visibility = View.GONE
-        }
-
-        // ISO
-        isoRange = cam2Info.getCameraCharacteristic(CameraCharacteristics.SENSOR_INFO_SENSITIVITY_RANGE)
-        if (isoRange != null) {
-            isoLower = isoRange!!.lower
-            isoUpper = isoRange!!.upper
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                binding.isoSeekBar.min = isoLower
-            }
-            binding.isoSeekBar.max = isoUpper
-            // For Camera2 interop, we can't easily get current values, so default to auto/lower
-            binding.isoSeekBar.progress = isoLower
-            binding.isoValueText.text = "Auto"
-            binding.isoSeekBar.visibility = View.VISIBLE
-            binding.isoLabel.visibility = View.VISIBLE
-            binding.isoValueText.visibility = View.VISIBLE
-        } else {
-            binding.isoSeekBar.visibility = View.GONE
-            binding.isoLabel.visibility = View.GONE
-            binding.isoValueText.visibility = View.GONE
-        }
-
-        // Shutter Speed
-        exposureTimeRange = cam2Info.getCameraCharacteristic(CameraCharacteristics.SENSOR_INFO_EXPOSURE_TIME_RANGE)
-        if (exposureTimeRange != null) {
-            val minEtMs = exposureTimeRange!!.lower / 1_000_000L
-            val maxEtMs = minOf(exposureTimeRange!!.upper / 1_000_000L, 2000L)
-
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                binding.shutterSpeedSeekBar.min = 0
-            }
-            binding.shutterSpeedSeekBar.max = 100
-
-            // Default to auto since we can't easily get current exposure time
-            binding.shutterSpeedSeekBar.progress = 0
-            binding.shutterSpeedValueText.text = "Auto"
-
-            binding.shutterSpeedSeekBar.visibility = View.VISIBLE
-            binding.shutterSpeedLabel.visibility = View.VISIBLE
-            binding.shutterSpeedValueText.visibility = View.VISIBLE
-        } else {
-            binding.shutterSpeedSeekBar.visibility = View.GONE
-            binding.shutterSpeedLabel.visibility = View.GONE
-            binding.shutterSpeedValueText.visibility = View.GONE
-        }
-
-        // White Balance
-        val awbModes = cam2Info.getCameraCharacteristic(CameraCharacteristics.CONTROL_AWB_AVAILABLE_MODES)
-        if (awbModes != null && awbModes.isNotEmpty()) {
-            val awbModeStrings = awbModes.map { modeToStringAWB(it) }
-            val adapter = ArrayAdapter(this, android.R.layout.simple_spinner_item, awbModeStrings)
-            adapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item)
-            binding.whiteBalanceSpinner.adapter = adapter
-
-            // Default to AUTO
-            val autoIndex = awbModes.indexOf(CameraMetadata.CONTROL_AWB_MODE_AUTO)
-            binding.whiteBalanceSpinner.setSelection(if (autoIndex != -1) autoIndex else 0)
-            binding.whiteBalanceSpinner.visibility = View.VISIBLE
-            binding.whiteBalanceLabel.visibility = View.VISIBLE
-        } else {
-            binding.whiteBalanceSpinner.visibility = View.GONE
-            binding.whiteBalanceLabel.visibility = View.GONE
-        }
-    }
-
-    private fun modeToStringAWB(mode: Int): String {
-        return when (mode) {
-            CameraMetadata.CONTROL_AWB_MODE_OFF -> "OFF"
-            CameraMetadata.CONTROL_AWB_MODE_AUTO -> "AUTO"
-            CameraMetadata.CONTROL_AWB_MODE_INCANDESCENT -> "INCANDESCENT"
-            CameraMetadata.CONTROL_AWB_MODE_FLUORESCENT -> "FLUORESCENT"
-            CameraMetadata.CONTROL_AWB_MODE_WARM_FLUORESCENT -> "WARM_FLUORESCENT"
-            CameraMetadata.CONTROL_AWB_MODE_DAYLIGHT -> "DAYLIGHT"
-            CameraMetadata.CONTROL_AWB_MODE_CLOUDY_DAYLIGHT -> "CLOUDY_DAYLIGHT"
-            CameraMetadata.CONTROL_AWB_MODE_TWILIGHT -> "TWILIGHT"
-            CameraMetadata.CONTROL_AWB_MODE_SHADE -> "SHADE"
-            else -> "UNKNOWN ($mode)"
-        }
-    }
-
-    private fun stringToModeAWB(modeString: String): Int {
-        return when (modeString) {
-            "OFF" -> CameraMetadata.CONTROL_AWB_MODE_OFF
-            "AUTO" -> CameraMetadata.CONTROL_AWB_MODE_AUTO
-            "INCANDESCENT" -> CameraMetadata.CONTROL_AWB_MODE_INCANDESCENT
-            "FLUORESCENT" -> CameraMetadata.CONTROL_AWB_MODE_FLUORESCENT
-            "WARM_FLUORESCENT" -> CameraMetadata.CONTROL_AWB_MODE_WARM_FLUORESCENT
-            "DAYLIGHT" -> CameraMetadata.CONTROL_AWB_MODE_DAYLIGHT
-            "CLOUDY_DAYLIGHT" -> CameraMetadata.CONTROL_AWB_MODE_CLOUDY_DAYLIGHT
-            "TWILIGHT" -> CameraMetadata.CONTROL_AWB_MODE_TWILIGHT
-            "SHADE" -> CameraMetadata.CONTROL_AWB_MODE_SHADE
-            else -> CameraMetadata.CONTROL_AWB_MODE_AUTO
-        }
-    }
-
-    @SuppressLint("UnsafeOptInUsageError")
-    private fun setupProControlsListeners() {
-        // EV Compensation
-        binding.evSeekBar.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
-            override fun onProgressChanged(seekBar: SeekBar?, progress: Int, fromUser: Boolean) {
-                if (fromUser) {
-                    val evRange = camera?.cameraInfo?.exposureState?.exposureCompensationRange
-                    val actualProgress = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                        progress
-                    } else {
-                        progress + (evRange?.lower ?: 0)
-                    }
-                    camera?.cameraControl?.setExposureCompensationIndex(actualProgress)
-                    val evValue = actualProgress * (camera?.cameraInfo?.exposureState?.exposureCompensationStep?.toFloat() ?: 0f)
-                    binding.evValueText.text = "%.1f".format(evValue)
-                }
-            }
-            override fun onStartTrackingTouch(seekBar: SeekBar?) {}
-            override fun onStopTrackingTouch(seekBar: SeekBar?) {}
-        })
-
-        // Zoom
-        binding.zoomSeekBar.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
-            override fun onProgressChanged(seekBar: SeekBar?, progress: Int, fromUser: Boolean) {
-                if (fromUser) {
-                    val zoomState = camera?.cameraInfo?.zoomState?.value
-                    val minZoom = (zoomState?.minZoomRatio ?: 1f) * 10f
-                    val actualProgress = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                        progress / 10f
-                    } else {
-                        (progress + minZoom.toInt()) / 10f
-                    }
-                    camera?.cameraControl?.setZoomRatio(actualProgress.coerceIn(
-                        zoomState?.minZoomRatio ?: 1f,
-                        zoomState?.maxZoomRatio ?: 1f
-                    ))
-                    binding.zoomValueText.text = "%.1fx".format(actualProgress)
-                }
-            }
-            override fun onStartTrackingTouch(seekBar: SeekBar?) {}
-            override fun onStopTrackingTouch(seekBar: SeekBar?) {}
-        })
-
-        // Flash Mode
-        binding.flashModeSpinner.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
-            override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) {
-                imageCapture?.flashMode = when (position) {
-                    0 -> ImageCapture.FLASH_MODE_AUTO
-                    1 -> ImageCapture.FLASH_MODE_ON
-                    2 -> ImageCapture.FLASH_MODE_OFF
-                    else -> ImageCapture.FLASH_MODE_AUTO
-                }
-            }
-            override fun onNothingSelected(parent: AdapterView<*>?) {}
-        }
-
-        // Manual Focus
-        binding.focusSeekBar.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
-            override fun onProgressChanged(seekBar: SeekBar?, progress: Int, fromUser: Boolean) {
-                if (fromUser && (minFocusDistance > 0f || camera2CameraControl != null)) {
-                    val builder = CaptureRequestOptions.Builder()
-                    if (progress == 0) {
-                        builder.setCaptureRequestOption(CaptureRequest.CONTROL_AF_MODE, CameraMetadata.CONTROL_AF_MODE_CONTINUOUS_PICTURE)
-                        binding.focusValueText.text = "Auto"
-                    } else {
-                        val focusDistanceValue = (progress / 100.0f) * minFocusDistance
-                        builder.setCaptureRequestOption(CaptureRequest.LENS_FOCUS_DISTANCE, focusDistanceValue)
-                        builder.setCaptureRequestOption(CaptureRequest.CONTROL_AF_MODE, CameraMetadata.CONTROL_AF_MODE_OFF)
-                        binding.focusValueText.text = "%.2f D".format(focusDistanceValue)
-                    }
-                    camera2CameraControl?.addCaptureRequestOptions(builder.build())?.addListener({}, ContextCompat.getMainExecutor(this@MainActivity))
-                }
-            }
-            override fun onStartTrackingTouch(seekBar: SeekBar?) {}
-            override fun onStopTrackingTouch(seekBar: SeekBar?) {}
-        })
-
-        // ISO
-        binding.isoSeekBar.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
-            override fun onProgressChanged(seekBar: SeekBar?, progress: Int, fromUser: Boolean) {
-                if (fromUser && isoRange != null) {
-                    val actualIsoValue = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                        progress
-                    } else {
-                        progress + isoLower
-                    }
-                    val isoValue = actualIsoValue.coerceIn(isoLower, isoUpper)
-                    val builder = CaptureRequestOptions.Builder()
-                        .setCaptureRequestOption(CaptureRequest.SENSOR_SENSITIVITY, isoValue)
-                        .setCaptureRequestOption(CaptureRequest.CONTROL_AE_MODE, CameraMetadata.CONTROL_AE_MODE_OFF)
-                    camera2CameraControl?.addCaptureRequestOptions(builder.build())?.addListener({}, ContextCompat.getMainExecutor(this@MainActivity))
-                    binding.isoValueText.text = isoValue.toString()
-                }
-            }
-            override fun onStartTrackingTouch(seekBar: SeekBar?) {}
-            override fun onStopTrackingTouch(seekBar: SeekBar?) {}
-        })
-
-        // Shutter Speed
-        binding.shutterSpeedSeekBar.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
-            override fun onProgressChanged(seekBar: SeekBar?, progressValue: Int, fromUser: Boolean) {
-                if (fromUser && exposureTimeRange != null) {
-                    val minEtNs = exposureTimeRange!!.lower
-                    val maxEtNsForUi = minOf(exposureTimeRange!!.upper, 2_000_000_000L)
-
-                    val exposureTimeNs = minEtNs + (((maxEtNsForUi - minEtNs) * progressValue) / 100L)
-                    val coercedExposureTime = exposureTimeNs.coerceIn(minEtNs, exposureTimeRange!!.upper)
-
-                    val builder = CaptureRequestOptions.Builder()
-                        .setCaptureRequestOption(CaptureRequest.SENSOR_EXPOSURE_TIME, coercedExposureTime)
-                        .setCaptureRequestOption(CaptureRequest.CONTROL_AE_MODE, CameraMetadata.CONTROL_AE_MODE_OFF)
-                    camera2CameraControl?.addCaptureRequestOptions(builder.build())?.addListener({}, ContextCompat.getMainExecutor(this@MainActivity))
-                    binding.shutterSpeedValueText.text = "${coercedExposureTime / 1_000_000L}ms"
-                }
-            }
-            override fun onStartTrackingTouch(seekBar: SeekBar?) {}
-            override fun onStopTrackingTouch(seekBar: SeekBar?) {}
-        })
-
-        // White Balance
-        binding.whiteBalanceSpinner.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
-            override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) {
-                val selectedModeString = parent?.getItemAtPosition(position) as? String ?: return
-                val awbMode = stringToModeAWB(selectedModeString)
-                val builder = CaptureRequestOptions.Builder()
-                    .setCaptureRequestOption(CaptureRequest.CONTROL_AWB_MODE, awbMode)
-                camera2CameraControl?.addCaptureRequestOptions(builder.build())?.addListener({}, ContextCompat.getMainExecutor(this@MainActivity))
-            }
-            override fun onNothingSelected(parent: AdapterView<*>?) {}
-        }
-    }
-
-    private fun takePhoto() {
-        val imageCapture = imageCapture ?: return
-
-        val name = SimpleDateFormat(FILENAME_FORMAT, Locale.US).format(System.currentTimeMillis())
-        val contentValues = ContentValues().apply {
-            put(MediaStore.MediaColumns.DISPLAY_NAME, name)
-            put(MediaStore.MediaColumns.MIME_TYPE, "image/jpeg")
-            if (Build.VERSION.SDK_INT > Build.VERSION_CODES.P) {
-                put(MediaStore.Images.Media.RELATIVE_PATH, "Pictures/ProCameraX-Image")
-            }
-        }
-
-        val outputOptions = ImageCapture.OutputFileOptions.Builder(
-            contentResolver,
-            MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
-            contentValues
-        ).build()
-
-        imageCapture.takePicture(
-            outputOptions,
-            ContextCompat.getMainExecutor(this),
-            object : ImageCapture.OnImageSavedCallback {
-                override fun onError(exc: ImageCaptureException) {
-                    Log.e(TAG, "Photo capture failed: ${exc.message}", exc)
-                    Toast.makeText(baseContext, "Photo capture failed: ${exc.message}", Toast.LENGTH_SHORT).show()
-                }
-
-                override fun onImageSaved(output: ImageCapture.OutputFileResults) {
-                    val msg = "Photo capture succeeded: ${output.savedUri}"
-                    Toast.makeText(baseContext, msg, Toast.LENGTH_SHORT).show()
-                    Log.d(TAG, msg)
-                }
-            }
-        )
-    }
-
-    private fun switchCamera() {
-        cameraSelector = if (cameraSelector == CameraSelector.DEFAULT_BACK_CAMERA) {
-            CameraSelector.DEFAULT_FRONT_CAMERA
-        } else {
-            CameraSelector.DEFAULT_BACK_CAMERA
-        }
-        bindCameraUseCases()
-    }
-
-    override fun onDestroy() {
-        super.onDestroy()
-        cameraExecutor.shutdown()
-    }
-}
-
-
-themes
-
-<resources xmlns:tools="http://schemas.android.com/tools">
-    <!-- Base application theme. -->
-    <style name="Theme.CameraX2" parent="Theme.AppCompat.Light.DarkActionBar">
-        <!-- Primary brand color. -->
-        <item name="colorPrimary">@color/purple_500</item>
-        <item name="colorPrimaryVariant">@color/purple_700</item>
-        <item name="colorOnPrimary">@color/white</item>
-        <!-- Secondary brand color. -->
-        <item name="colorSecondary">@color/teal_200</item>
-        <item name="colorSecondaryVariant">@color/teal_700</item>
-        <item name="colorOnSecondary">@color/black</item>
-        <!-- Status bar color. -->
-        <item name="android:statusBarColor">?attr/colorPrimaryVariant</item>
-        <!-- Customize your theme here. -->
-    </style>
-</resources>
-
-
-build gradle
-
-
-plugins {
-    alias(libs.plugins.android.application)
-    alias(libs.plugins.kotlin.android)
-    alias(libs.plugins.kotlin.compose)
-}
-
-android {
-    buildFeatures {
-        viewBinding = true
-    }
-    namespace = "com.example.camerax2"
-    compileSdk = 35
-
-    defaultConfig {
-        applicationId = "com.example.camerax2"
-        minSdk = 26
-        targetSdk = 35
-        versionCode = 1
-        versionName = "1.0"
-
-        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
-    }
-
-    buildTypes {
-        release {
-            isMinifyEnabled = false
-            proguardFiles(
-                getDefaultProguardFile("proguard-android-optimize.txt"),
-                "proguard-rules.pro"
-            )
-        }
-    }
-    compileOptions {
-        sourceCompatibility = JavaVersion.VERSION_11
-        targetCompatibility = JavaVersion.VERSION_11
-    }
-    kotlinOptions {
-        jvmTarget = "11"
-    }
-    buildFeatures {
-        compose = true
-    }
-}
-
-dependencies {
-
-    implementation(libs.androidx.core.ktx)
-    implementation(libs.androidx.lifecycle.runtime.ktx)
-    implementation(libs.androidx.activity.compose)
-    implementation(platform(libs.androidx.compose.bom))
-    implementation(libs.androidx.ui)
-    implementation(libs.androidx.ui.graphics)
-    implementation(libs.androidx.ui.tooling.preview)
-    implementation(libs.androidx.material3)
-    implementation(libs.androidx.camera.core)
-    implementation(libs.androidx.camera.camera2)
-    implementation(libs.androidx.camera.lifecycle)
-    implementation(libs.androidx.camera.view)
-    implementation(libs.androidx.camera.extensions)
-    testImplementation(libs.junit)
-    androidTestImplementation(libs.androidx.junit)
-    androidTestImplementation(libs.androidx.espresso.core)
-    androidTestImplementation(platform(libs.androidx.compose.bom))
-    androidTestImplementation(libs.androidx.ui.test.junit4)
-    debugImplementation(libs.androidx.ui.tooling)
-    debugImplementation(libs.androidx.ui.test.manifest)
-    val cameraxVersion = "1.3.1" // Check for the latest version
-    implementation("androidx.camera:camera-core:${cameraxVersion}")
-    implementation("androidx.camera:camera-camera2:${cameraxVersion}") // For Camera2 interop
-    implementation("androidx.camera:camera-lifecycle:${cameraxVersion}")
-    implementation("androidx.camera:camera-video:${cameraxVersion}") // If you plan video
-    implementation("androidx.camera:camera-view:${cameraxVersion}")
-    implementation("androidx.camera:camera-extensions:${cameraxVersion}") // For vendor extensions
-    implementation("androidx.constraintlayout:constraintlayout:2.1.4")
-    implementation("androidx.core:core-ktx:1.12.0")
-    implementation("androidx.appcompat:appcompat:1.6.1")
-    implementation("com.google.android.material:material:1.11.0")
-    implementation("androidx.constraintlayout:constraintlayout:2.1.4")
-}
-activity main xml
-
-<?xml version="1.0" encoding="utf-8"?>
-<androidx.constraintlayout.widget.ConstraintLayout xmlns:android="http://schemas.android.com/apk/res/android"
-    xmlns:app="http://schemas.android.com/apk/res-auto"
-    xmlns:tools="http://schemas.android.com/tools"
-    android:layout_width="match_parent"
-    android:layout_height="match_parent"
-    tools:context=".MainActivity">
-
-    <!-- Camera Preview -->
-    <androidx.camera.view.PreviewView
-        android:id="@+id/previewView"
-        android:layout_width="0dp"
-        android:layout_height="0dp"
-        app:layout_constraintBottom_toTopOf="@+id/controlsScrollView"
-        app:layout_constraintEnd_toEndOf="parent"
-        app:layout_constraintStart_toStartOf="parent"
-        app:layout_constraintTop_toTopOf="parent" />
-
-    <!-- Controls ScrollView -->
-    <ScrollView
-        android:id="@+id/controlsScrollView"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:background="#CC000000"
-        app:layout_constraintBottom_toTopOf="@+id/buttonsLayout"
-        app:layout_constraintEnd_toEndOf="parent"
-        app:layout_constraintStart_toStartOf="parent">
-
-        <LinearLayout
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:orientation="vertical"
-            android:padding="16dp">
-
-            <!-- EV Compensation -->
-            <TextView
-                android:id="@+id/evLabel"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:text="EV Compensation"
-                android:textColor="@android:color/white"
-                android:visibility="gone" />
-
-            <LinearLayout
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:orientation="horizontal">
-
-                <SeekBar
-                    android:id="@+id/evSeekBar"
-                    android:layout_width="0dp"
-                    android:layout_height="wrap_content"
-                    android:layout_weight="1"
-                    android:visibility="gone" />
-
-                <TextView
-                    android:id="@+id/evValueText"
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:layout_marginStart="8dp"
-                    android:text="0.0"
-                    android:textColor="@android:color/white"
-                    android:visibility="gone" />
-            </LinearLayout>
-
-            <!-- Zoom -->
-            <TextView
-                android:id="@+id/zoomLabel"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="8dp"
-                android:text="Zoom"
-                android:textColor="@android:color/white"
-                android:visibility="gone" />
-
-            <LinearLayout
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:orientation="horizontal">
-
-                <SeekBar
-                    android:id="@+id/zoomSeekBar"
-                    android:layout_width="0dp"
-                    android:layout_height="wrap_content"
-                    android:layout_weight="1"
-                    android:visibility="gone" />
-
-                <TextView
-                    android:id="@+id/zoomValueText"
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:layout_marginStart="8dp"
-                    android:text="1.0x"
-                    android:textColor="@android:color/white"
-                    android:visibility="gone" />
-            </LinearLayout>
-
-            <!-- Flash Mode -->
-            <TextView
-                android:id="@+id/flashLabel"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="8dp"
-                android:text="Flash Mode"
-                android:textColor="@android:color/white"
-                android:visibility="gone" />
-
-            <Spinner
-                android:id="@+id/flashModeSpinner"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:visibility="gone" />
-
-            <!-- Focus -->
-            <TextView
-                android:id="@+id/focusLabel"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="8dp"
-                android:text="Focus"
-                android:textColor="@android:color/white"
-                android:visibility="gone" />
-
-            <LinearLayout
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:orientation="horizontal">
-
-                <SeekBar
-                    android:id="@+id/focusSeekBar"
-                    android:layout_width="0dp"
-                    android:layout_height="wrap_content"
-                    android:layout_weight="1"
-                    android:visibility="gone" />
-
-                <TextView
-                    android:id="@+id/focusValueText"
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:layout_marginStart="8dp"
-                    android:text="Auto"
-                    android:textColor="@android:color/white"
-                    android:visibility="gone" />
-            </LinearLayout>
-
-            <!-- ISO -->
-            <TextView
-                android:id="@+id/isoLabel"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="8dp"
-                android:text="ISO"
-                android:textColor="@android:color/white"
-                android:visibility="gone" />
-
-            <LinearLayout
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:orientation="horizontal">
-
-                <SeekBar
-                    android:id="@+id/isoSeekBar"
-                    android:layout_width="0dp"
-                    android:layout_height="wrap_content"
-                    android:layout_weight="1"
-                    android:visibility="gone" />
-
-                <TextView
-                    android:id="@+id/isoValueText"
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:layout_marginStart="8dp"
-                    android:text="Auto"
-                    android:textColor="@android:color/white"
-                    android:visibility="gone" />
-            </LinearLayout>
-
-            <!-- Shutter Speed -->
-            <TextView
-                android:id="@+id/shutterSpeedLabel"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="8dp"
-                android:text="Shutter Speed"
-                android:textColor="@android:color/white"
-                android:visibility="gone" />
-
-            <LinearLayout
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:orientation="horizontal">
-
-                <SeekBar
-                    android:id="@+id/shutterSpeedSeekBar"
-                    android:layout_width="0dp"
-                    android:layout_height="wrap_content"
-                    android:layout_weight="1"
-                    android:visibility="gone" />
-
-                <TextView
-                    android:id="@+id/shutterSpeedValueText"
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:layout_marginStart="8dp"
-                    android:text="Auto"
-                    android:textColor="@android:color/white"
-                    android:visibility="gone" />
-            </LinearLayout>
-
-            <!-- White Balance -->
-            <TextView
-                android:id="@+id/whiteBalanceLabel"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="8dp"
-                android:text="White Balance"
-                android:textColor="@android:color/white"
-                android:visibility="gone" />
-
-            <Spinner
-                android:id="@+id/whiteBalanceSpinner"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:visibility="gone" />
-
-        </LinearLayout>
-    </ScrollView>
-
-    <!-- Buttons Layout -->
-    <LinearLayout
-        android:id="@+id/buttonsLayout"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:background="#CC000000"
-        android:orientation="horizontal"
-        android:padding="16dp"
-        app:layout_constraintBottom_toBottomOf="parent"
-        app:layout_constraintEnd_toEndOf="parent"
-        app:layout_constraintStart_toStartOf="parent">
-
-        <Button
-            android:id="@+id/switchCameraButton"
-            android:layout_width="0dp"
-            android:layout_height="wrap_content"
-            android:layout_marginEnd="8dp"
-            android:layout_weight="1"
-            android:text="Switch Camera" />
-
-        <Button
-            android:id="@+id/captureButton"
-            android:layout_width="0dp"
-            android:layout_height="wrap_content"
-            android:layout_marginStart="8dp"
-            android:layout_weight="1"
-            android:text="Capture" />
-
-    </LinearLayout>
-
-</androidx.constraintlayout.widget.ConstraintLayout>
+Below is a battle-tested recipe that works well for Ubuntu 20.04 / 22.04 servers and a macOS client. It keeps the VM light, avoids opening extra ports to the whole world, and feels almost like sitting at a local Linux laptop once it’s up.
+
+⸻
+
+1. On the Ubuntu VM – install a lightweight desktop + RDP server
+
+# 0) Snapshot or take a backup, just in case.
+
+# 1) Refresh packages
+sudo apt update && sudo apt full-upgrade -y
+
+# 2) Install a minimal desktop (XFCE) – ~350 MB
+sudo apt install -y xfce4 xfce4-goodies
+
+# 3) Install the RDP service
+sudo apt install -y xrdp
+
+# 4) Tell xRDP to use XFCE instead of the heavier GNOME session
+echo "startxfce4" | sudo tee -a /etc/xrdp/startwm.sh
+
+# 5) Start and enable xRDP
+sudo systemctl enable --now xrdp
+
+# 6) (Optional) UFW firewall rule if the VM is on an internal subnet only
+#     Skip this and use an SSH tunnel if the VM is on a public IP!
+sudo ufw allow 3389/tcp
+
+At this point you could connect directly to <vm-ip>:3389, but exposing RDP on the open internet is risky.
+The safer path is an SSH tunnel:
+
+# On your *Mac* terminal (not on the VM):
+ssh -L 13389:localhost:3389 user@vm-ip
+
+	•	13389 is an arbitrary free port on your Mac.
+	•	Leave that SSH session running; it encrypts all RDP traffic.
+
+⸻
+
+2. On the Mac – install a client and connect
+
+Need	Tool	How to get it	How to use it
+Full desktop	Microsoft Remote Desktop 10 (free)	App Store	“Add PC” → PC name: localhost:13389 (or the VM’s real IP if you didn’t tunnel) → Username/password = the Ubuntu user
+Single X11 apps(e.g., pop open a browser or gedit)	XQuartz (open-source X server)	https://www.xquartz.org	Install XQuartz → log out & back in → in Terminal run ssh -X user@vm-ip → launch GUI app (firefox &)
+Code editor only	VS Code + “Remote-SSH” extension	https://code.visualstudio.com	In VS Code ⇢ “Remote Explorer” ⇢ SSH Targets ⇢ connect
+
+Tip for Retina displays: In Microsoft RD → Settings → “Display” tab → enable “Optimize for Retina displays” so fonts stay crisp.
+
+⸻
+
+3. Hardening & housekeeping
+
+Action	Command / Setting
+Limit log-ins to sudoers only	sudo adduser <you> xrdp then remove any generic users from the VM
+Keep xrdp & the desktop patched	sudo unattended-upgrade -d or your usual patch cycle
+Auto-lock the session	XFCE Settings → “Screensaver” → lock after X mins
+Monitor resource hit	htop → XFCE idle RAM is usually 200-300 MB; if it rises into GBs, profile with ps_mem
+
+
+⸻
+
+4. If you ever want to remove the GUI
+
+sudo systemctl stop xrdp
+sudo apt purge -y xrdp xfce4 xfce4-goodies
+sudo apt autoremove --purge
+sudo systemctl set-default multi-user.target   # graphical target removed
+
+
+⸻
+
+Quick checklist
+	•	Cleared with company policy (no surprise audits!).
+	•	VM has at least 1 GB of free RAM beyond the Django + Node stack.
+	•	Access limited to a private network or SSH-tunnelled.
+	•	Regular patching in place.
+
+Once those boxes are ticked, enjoy a full Linux desktop from your Mac in just a few clicks—without lugging around another laptop.
+
+
+
+
+
+
+
+
+
+Version 1
+
+
+
+
+
+Yes—it’s technically straightforward to bolt a desktop environment onto almost any head-less VM, but before you dive in there are a few things to weigh up:
+
+⸻
+
+1. Check the “should I?” before the “can I?”
+
+Concern	Why it matters
+Company policy / compliance	Many orgs forbid GUIs on production hosts because of extra attack surface and un-audited packages.
+Performance & memory	GNOME or KDE can add 1–2 GB of RAM and dozens of extra processes. If the box is sized for a lean Django/Node stack, you could starve your services.
+Dev vs. prod	On production servers it’s safer to keep things head-less; spin up a separate throw-away VM for GUI testing if possible.
+
+If policy and resources are clear, proceed.
+
+⸻
+
+2. Choose a lightweight route
+
+Option	When to use	Pros	Cons
+X11 forwarding (ssh -X)	Occasional need to pop open a browser or settings window	No permanent packages, minimal footprint	Latency, some apps misbehave over X11
+VS Code Remote / Web-based IDE	You mainly want a GUI editor or terminal tabs	Zero desktop overhead, easy port 80/443 access	Doesn’t give you a full desktop
+Minimal desktop + remote protocol(XFCE, MATE, LXQt) + xRDP / VNC	You need a full desktop (browser devtools, design tools, etc.)	Light on RAM; native RDP clients on Windows/macOS	Still adds ~500 MB–1 GB of RAM; extra ports to secure
+Full desktop (GNOME/KDE)	You want the same feel as a local workstation	Familiar UI, everything “just works”	Heavy (1 GB+ RAM), lots of services, slower boot
+
+
+⸻
+
+3. Installation cheat-sheets (Ubuntu & RHEL family)
+
+Ubuntu / Debian
+
+# Update
+sudo apt update && sudo apt upgrade
+
+# Lightweight desktop (XFCE)
+sudo apt install xfce4 xfce4-goodies
+
+# RDP server
+sudo apt install xrdp
+sudo systemctl enable --now xrdp
+
+# Optional firewall rule (UFW)
+sudo ufw allow 3389/tcp
+
+Browse to your-vm-ip:3389 with the standard “Remote Desktop” client.
+
+RHEL / CentOS / Rocky / Alma
+
+# Enable GUI group (use minimal desktop instead of Workstation if RAM is tight)
+sudo dnf groupinstall "Server with GUI"
+
+# Set graphical target
+sudo systemctl set-default graphical.target
+sudo systemctl isolate graphical.target
+
+# RDP server
+sudo dnf install xrdp
+sudo systemctl enable --now xrdp
+sudo firewall-cmd --add-port=3389/tcp --permanent
+sudo firewall-cmd --reload
+
+
+⸻
+
+4. Harden & test
+	1.	Restrict access – limit RDP/VNC to a VPN subnet or SSH tunnel.
+	2.	Patch cycle – GUIs pull in lots of extra packages; keep them updated.
+	3.	Resources – monitor CPU/RAM after installation (htop, free -h, Grafana).
+
+⸻
+
+5. Roll-back safety net
+	•	Snapshot the VM (if your hypervisor allows) before installing.
+	•	If things go sideways, revert instead of debugging a broken display manager.
+
+⸻
+
+Bottom line
+
+Yes, you can add a GUI, and on an internal dev box it’s often fine. Just pick a lightweight desktop, expose it over a secure channel, and keep an eye on memory and company policy. If the VM is production-facing or resource-constrained, you’ll be happier running GUI tools locally and keeping the server head-less.
