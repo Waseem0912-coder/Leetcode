@@ -1,6 +1,4 @@
-NEW camera ui
-
-activity_main.xml
+xml
 
 <?xml version="1.0" encoding="utf-8"?>
 <androidx.constraintlayout.widget.ConstraintLayout xmlns:android="http://schemas.android.com/apk/res/android"
@@ -8,7 +6,6 @@ activity_main.xml
     xmlns:tools="http://schemas.android.com/tools"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
-    android:background="@color/black"
     tools:context=".MainActivity">
 
     <!-- Camera Preview -->
@@ -16,106 +13,18 @@ activity_main.xml
         android:id="@+id/previewView"
         android:layout_width="0dp"
         android:layout_height="0dp"
-        app:layout_constraintBottom_toBottomOf="parent"
+        app:layout_constraintBottom_toTopOf="@+id/controlsScrollView"
         app:layout_constraintEnd_toEndOf="parent"
         app:layout_constraintStart_toStartOf="parent"
         app:layout_constraintTop_toTopOf="parent" />
 
-    <!-- Top Controls Bar -->
-    <LinearLayout
-        android:id="@+id/topControlsBar"
+    <!-- Controls ScrollView -->
+    <ScrollView
+        android:id="@+id/controlsScrollView"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:background="@drawable/gradient_overlay_top"
-        android:orientation="horizontal"
-        android:padding="16dp"
-        app:layout_constraintEnd_toEndOf="parent"
-        app:layout_constraintStart_toStartOf="parent"
-        app:layout_constraintTop_toTopOf="parent">
-
-        <!-- Flash Control -->
-        <LinearLayout
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:layout_weight="1"
-            android:gravity="center"
-            android:orientation="vertical">
-
-            <ImageButton
-                android:id="@+id/flashButton"
-                android:layout_width="40dp"
-                android:layout_height="40dp"
-                android:background="@drawable/control_button_background"
-                android:padding="8dp"
-                android:src="@drawable/ic_flash_auto"
-                android:tint="@color/white" />
-
-            <Spinner
-                android:id="@+id/flashModeSpinner"
-                android:layout_width="wrap_content"
-                android:layout_height="0dp"
-                android:visibility="gone" />
-        </LinearLayout>
-
-        <!-- White Balance Control -->
-        <LinearLayout
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:layout_weight="1"
-            android:gravity="center"
-            android:orientation="vertical">
-
-            <ImageButton
-                android:id="@+id/whiteBalanceButton"
-                android:layout_width="40dp"
-                android:layout_height="40dp"
-                android:background="@drawable/control_button_background"
-                android:padding="8dp"
-                android:src="@drawable/ic_wb_auto"
-                android:tint="@color/white" />
-
-            <Spinner
-                android:id="@+id/whiteBalanceSpinner"
-                android:layout_width="wrap_content"
-                android:layout_height="0dp"
-                android:visibility="gone" />
-        </LinearLayout>
-
-        <!-- Grid Lines Toggle -->
-        <ImageButton
-            android:id="@+id/gridButton"
-            android:layout_width="40dp"
-            android:layout_height="40dp"
-            android:layout_weight="1"
-            android:background="@drawable/control_button_background"
-            android:padding="8dp"
-            android:src="@drawable/ic_grid"
-            android:tint="@color/white" />
-
-        <!-- Settings -->
-        <ImageButton
-            android:id="@+id/settingsButton"
-            android:layout_width="40dp"
-            android:layout_height="40dp"
-            android:layout_weight="1"
-            android:background="@drawable/control_button_background"
-            android:padding="8dp"
-            android:src="@drawable/ic_settings"
-            android:tint="@color/white" />
-
-    </LinearLayout>
-
-    <!-- Manual Controls Panel -->
-    <androidx.cardview.widget.CardView
-        android:id="@+id/manualControlsCard"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:layout_margin="16dp"
-        android:visibility="visible"
-        app:cardBackgroundColor="#E6000000"
-        app:cardCornerRadius="16dp"
-        app:cardElevation="8dp"
-        app:layout_constraintBottom_toTopOf="@+id/bottomControlsBar"
+        android:background="#CC000000"
+        app:layout_constraintBottom_toTopOf="@+id/buttonsLayout"
         app:layout_constraintEnd_toEndOf="parent"
         app:layout_constraintStart_toStartOf="parent">
 
@@ -125,555 +34,1003 @@ activity_main.xml
             android:orientation="vertical"
             android:padding="16dp">
 
-            <!-- ISO Control -->
+            <!-- EV Compensation -->
             <LinearLayout
-                android:id="@+id/isoControl"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:layout_marginBottom="12dp"
                 android:orientation="horizontal"
-                android:visibility="gone">
-
-                <ImageView
-                    android:layout_width="24dp"
-                    android:layout_height="24dp"
-                    android:layout_gravity="center_vertical"
-                    android:src="@drawable/ic_iso"
-                    android:tint="@color/white" />
-
+                android:gravity="center_vertical">
+                
                 <TextView
-                    android:layout_width="48dp"
-                    android:layout_height="wrap_content"
-                    android:layout_gravity="center_vertical"
-                    android:layout_marginStart="8dp"
-                    android:text="ISO"
-                    android:textColor="@color/white"
-                    android:textSize="12sp" />
-
-                <SeekBar
-                    android:id="@+id/isoSeekBar"
+                    android:id="@+id/evLabel"
                     android:layout_width="0dp"
                     android:layout_height="wrap_content"
-                    android:layout_gravity="center_vertical"
-                    android:layout_marginStart="8dp"
-                    android:layout_marginEnd="8dp"
                     android:layout_weight="1"
-                    android:progressTint="@color/accent_orange"
-                    android:thumbTint="@color/accent_orange" />
-
-                <TextView
-                    android:id="@+id/isoValueText"
+                    android:text="EV Compensation"
+                    android:textColor="@android:color/white"
+                    android:visibility="gone" />
+                
+                <Button
+                    android:id="@+id/evAutoButton"
                     android:layout_width="60dp"
-                    android:layout_height="wrap_content"
-                    android:layout_gravity="center_vertical"
-                    android:gravity="end"
-                    android:text="Auto"
-                    android:textColor="@color/accent_orange"
-                    android:textSize="14sp"
-                    android:textStyle="bold" />
+                    android:layout_height="36dp"
+                    android:text="AUTO"
+                    android:textSize="12sp"
+                    android:visibility="gone" />
             </LinearLayout>
 
-            <!-- Shutter Speed Control -->
             <LinearLayout
-                android:id="@+id/shutterControl"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:layout_marginBottom="12dp"
                 android:orientation="horizontal"
-                android:visibility="gone">
-
-                <ImageView
-                    android:layout_width="24dp"
-                    android:layout_height="24dp"
-                    android:layout_gravity="center_vertical"
-                    android:src="@drawable/ic_shutter"
-                    android:tint="@color/white" />
-
-                <TextView
-                    android:layout_width="48dp"
-                    android:layout_height="wrap_content"
-                    android:layout_gravity="center_vertical"
-                    android:layout_marginStart="8dp"
-                    android:text="Speed"
-                    android:textColor="@color/white"
-                    android:textSize="12sp" />
-
-                <SeekBar
-                    android:id="@+id/shutterSpeedSeekBar"
-                    android:layout_width="0dp"
-                    android:layout_height="wrap_content"
-                    android:layout_gravity="center_vertical"
-                    android:layout_marginStart="8dp"
-                    android:layout_marginEnd="8dp"
-                    android:layout_weight="1"
-                    android:progressTint="@color/accent_blue"
-                    android:thumbTint="@color/accent_blue" />
-
-                <TextView
-                    android:id="@+id/shutterSpeedValueText"
-                    android:layout_width="60dp"
-                    android:layout_height="wrap_content"
-                    android:layout_gravity="center_vertical"
-                    android:gravity="end"
-                    android:text="Auto"
-                    android:textColor="@color/accent_blue"
-                    android:textSize="14sp"
-                    android:textStyle="bold" />
-            </LinearLayout>
-
-            <!-- EV Compensation Control -->
-            <LinearLayout
-                android:id="@+id/evControl"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginBottom="12dp"
-                android:orientation="horizontal"
-                android:visibility="gone">
-
-                <ImageView
-                    android:layout_width="24dp"
-                    android:layout_height="24dp"
-                    android:layout_gravity="center_vertical"
-                    android:src="@drawable/ic_exposure"
-                    android:tint="@color/white" />
-
-                <TextView
-                    android:layout_width="48dp"
-                    android:layout_height="wrap_content"
-                    android:layout_gravity="center_vertical"
-                    android:layout_marginStart="8dp"
-                    android:text="EV"
-                    android:textColor="@color/white"
-                    android:textSize="12sp" />
+                android:layout_marginTop="4dp">
 
                 <SeekBar
                     android:id="@+id/evSeekBar"
                     android:layout_width="0dp"
                     android:layout_height="wrap_content"
-                    android:layout_gravity="center_vertical"
-                    android:layout_marginStart="8dp"
-                    android:layout_marginEnd="8dp"
                     android:layout_weight="1"
-                    android:progressTint="@color/accent_yellow"
-                    android:thumbTint="@color/accent_yellow" />
+                    android:visibility="gone" />
 
                 <TextView
                     android:id="@+id/evValueText"
-                    android:layout_width="60dp"
+                    android:layout_width="80dp"
                     android:layout_height="wrap_content"
-                    android:layout_gravity="center_vertical"
+                    android:layout_marginStart="8dp"
+                    android:text="0.0 EV"
+                    android:textColor="@android:color/white"
                     android:gravity="end"
-                    android:text="0.0"
-                    android:textColor="@color/accent_yellow"
-                    android:textSize="14sp"
-                    android:textStyle="bold" />
+                    android:visibility="gone" />
             </LinearLayout>
 
-            <!-- Focus Control -->
+            <!-- Zoom -->
             <LinearLayout
-                android:id="@+id/focusControl"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:layout_marginBottom="12dp"
                 android:orientation="horizontal"
-                android:visibility="gone">
-
-                <ImageView
-                    android:layout_width="24dp"
-                    android:layout_height="24dp"
-                    android:layout_gravity="center_vertical"
-                    android:src="@drawable/ic_focus"
-                    android:tint="@color/white" />
-
+                android:layout_marginTop="12dp"
+                android:gravity="center_vertical">
+                
                 <TextView
-                    android:layout_width="48dp"
-                    android:layout_height="wrap_content"
-                    android:layout_gravity="center_vertical"
-                    android:layout_marginStart="8dp"
-                    android:text="Focus"
-                    android:textColor="@color/white"
-                    android:textSize="12sp" />
-
-                <SeekBar
-                    android:id="@+id/focusSeekBar"
+                    android:id="@+id/zoomLabel"
                     android:layout_width="0dp"
                     android:layout_height="wrap_content"
-                    android:layout_gravity="center_vertical"
-                    android:layout_marginStart="8dp"
-                    android:layout_marginEnd="8dp"
                     android:layout_weight="1"
-                    android:progressTint="@color/accent_green"
-                    android:thumbTint="@color/accent_green" />
-
-                <TextView
-                    android:id="@+id/focusValueText"
+                    android:text="Zoom"
+                    android:textColor="@android:color/white"
+                    android:visibility="gone" />
+                
+                <Button
+                    android:id="@+id/zoomAutoButton"
                     android:layout_width="60dp"
-                    android:layout_height="wrap_content"
-                    android:layout_gravity="center_vertical"
-                    android:gravity="end"
-                    android:text="Auto"
-                    android:textColor="@color/accent_green"
-                    android:textSize="14sp"
-                    android:textStyle="bold" />
+                    android:layout_height="36dp"
+                    android:text="1.0x"
+                    android:textSize="12sp"
+                    android:visibility="gone" />
             </LinearLayout>
 
-            <!-- Zoom Control -->
             <LinearLayout
-                android:id="@+id/zoomControl"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:orientation="horizontal"
-                android:visibility="gone">
-
-                <ImageView
-                    android:layout_width="24dp"
-                    android:layout_height="24dp"
-                    android:layout_gravity="center_vertical"
-                    android:src="@drawable/ic_zoom"
-                    android:tint="@color/white" />
-
-                <TextView
-                    android:layout_width="48dp"
-                    android:layout_height="wrap_content"
-                    android:layout_gravity="center_vertical"
-                    android:layout_marginStart="8dp"
-                    android:text="Zoom"
-                    android:textColor="@color/white"
-                    android:textSize="12sp" />
+                android:layout_marginTop="4dp">
 
                 <SeekBar
                     android:id="@+id/zoomSeekBar"
                     android:layout_width="0dp"
                     android:layout_height="wrap_content"
-                    android:layout_gravity="center_vertical"
-                    android:layout_marginStart="8dp"
-                    android:layout_marginEnd="8dp"
                     android:layout_weight="1"
-                    android:progressTint="@color/accent_purple"
-                    android:thumbTint="@color/accent_purple" />
+                    android:visibility="gone" />
 
                 <TextView
                     android:id="@+id/zoomValueText"
-                    android:layout_width="60dp"
+                    android:layout_width="80dp"
                     android:layout_height="wrap_content"
-                    android:layout_gravity="center_vertical"
-                    android:gravity="end"
+                    android:layout_marginStart="8dp"
                     android:text="1.0x"
-                    android:textColor="@color/accent_purple"
-                    android:textSize="14sp"
-                    android:textStyle="bold" />
+                    android:textColor="@android:color/white"
+                    android:gravity="end"
+                    android:visibility="gone" />
             </LinearLayout>
 
+            <!-- Flash Mode -->
+            <TextView
+                android:id="@+id/flashLabel"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="12dp"
+                android:text="Flash Mode"
+                android:textColor="@android:color/white"
+                android:visibility="gone" />
+
+            <Spinner
+                android:id="@+id/flashModeSpinner"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="4dp"
+                android:visibility="gone" />
+
+            <!-- Focus -->
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal"
+                android:layout_marginTop="12dp"
+                android:gravity="center_vertical">
+                
+                <TextView
+                    android:id="@+id/focusLabel"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:text="Focus"
+                    android:textColor="@android:color/white"
+                    android:visibility="gone" />
+                
+                <Button
+                    android:id="@+id/focusAutoButton"
+                    android:layout_width="60dp"
+                    android:layout_height="36dp"
+                    android:text="AUTO"
+                    android:textSize="12sp"
+                    android:visibility="gone" />
+            </LinearLayout>
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal"
+                android:layout_marginTop="4dp">
+
+                <SeekBar
+                    android:id="@+id/focusSeekBar"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:visibility="gone" />
+
+                <TextView
+                    android:id="@+id/focusValueText"
+                    android:layout_width="80dp"
+                    android:layout_height="wrap_content"
+                    android:layout_marginStart="8dp"
+                    android:text="Auto"
+                    android:textColor="@android:color/white"
+                    android:gravity="end"
+                    android:visibility="gone" />
+            </LinearLayout>
+
+            <!-- ISO -->
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal"
+                android:layout_marginTop="12dp"
+                android:gravity="center_vertical">
+                
+                <TextView
+                    android:id="@+id/isoLabel"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:text="ISO"
+                    android:textColor="@android:color/white"
+                    android:visibility="gone" />
+                
+                <Button
+                    android:id="@+id/isoAutoButton"
+                    android:layout_width="60dp"
+                    android:layout_height="36dp"
+                    android:text="AUTO"
+                    android:textSize="12sp"
+                    android:visibility="gone" />
+            </LinearLayout>
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal"
+                android:layout_marginTop="4dp">
+
+                <SeekBar
+                    android:id="@+id/isoSeekBar"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:visibility="gone" />
+
+                <TextView
+                    android:id="@+id/isoValueText"
+                    android:layout_width="80dp"
+                    android:layout_height="wrap_content"
+                    android:layout_marginStart="8dp"
+                    android:text="Auto"
+                    android:textColor="@android:color/white"
+                    android:gravity="end"
+                    android:visibility="gone" />
+            </LinearLayout>
+
+            <!-- Shutter Speed -->
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal"
+                android:layout_marginTop="12dp"
+                android:gravity="center_vertical">
+                
+                <TextView
+                    android:id="@+id/shutterSpeedLabel"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:text="Shutter Speed"
+                    android:textColor="@android:color/white"
+                    android:visibility="gone" />
+                
+                <Button
+                    android:id="@+id/shutterSpeedAutoButton"
+                    android:layout_width="60dp"
+                    android:layout_height="36dp"
+                    android:text="AUTO"
+                    android:textSize="12sp"
+                    android:visibility="gone" />
+            </LinearLayout>
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal"
+                android:layout_marginTop="4dp">
+
+                <SeekBar
+                    android:id="@+id/shutterSpeedSeekBar"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:visibility="gone" />
+
+                <TextView
+                    android:id="@+id/shutterSpeedValueText"
+                    android:layout_width="80dp"
+                    android:layout_height="wrap_content"
+                    android:layout_marginStart="8dp"
+                    android:text="Auto"
+                    android:textColor="@android:color/white"
+                    android:gravity="end"
+                    android:visibility="gone" />
+            </LinearLayout>
+
+            <!-- White Balance -->
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal"
+                android:layout_marginTop="12dp"
+                android:gravity="center_vertical">
+                
+                <TextView
+                    android:id="@+id/whiteBalanceLabel"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:text="White Balance"
+                    android:textColor="@android:color/white"
+                    android:visibility="gone" />
+                
+                <Button
+                    android:id="@+id/whiteBalanceAutoButton"
+                    android:layout_width="60dp"
+                    android:layout_height="36dp"
+                    android:text="AUTO"
+                    android:textSize="12sp"
+                    android:visibility="gone" />
+            </LinearLayout>
+
+            <Spinner
+                android:id="@+id/whiteBalanceSpinner"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="4dp"
+                android:visibility="gone" />
+
         </LinearLayout>
+    </ScrollView>
 
-    </androidx.cardview.widget.CardView>
-
-    <!-- Hidden TextViews for Labels (kept for compatibility) -->
-    <TextView
-        android:id="@+id/evLabel"
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:visibility="gone" />
-
-    <TextView
-        android:id="@+id/zoomLabel"
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:visibility="gone" />
-
-    <TextView
-        android:id="@+id/flashLabel"
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:visibility="gone" />
-
-    <TextView
-        android:id="@+id/focusLabel"
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:visibility="gone" />
-
-    <TextView
-        android:id="@+id/isoLabel"
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:visibility="gone" />
-
-    <TextView
-        android:id="@+id/shutterSpeedLabel"
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:visibility="gone" />
-
-    <TextView
-        android:id="@+id/whiteBalanceLabel"
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:visibility="gone" />
-
-    <!-- Bottom Controls Bar -->
+    <!-- Buttons Layout -->
     <LinearLayout
-        android:id="@+id/bottomControlsBar"
+        android:id="@+id/buttonsLayout"
         android:layout_width="match_parent"
-        android:layout_height="120dp"
-        android:background="@drawable/gradient_overlay_bottom"
-        android:gravity="center"
+        android:layout_height="wrap_content"
+        android:background="#CC000000"
         android:orientation="horizontal"
-        android:paddingStart="32dp"
-        android:paddingEnd="32dp"
+        android:padding="16dp"
         app:layout_constraintBottom_toBottomOf="parent"
         app:layout_constraintEnd_toEndOf="parent"
         app:layout_constraintStart_toStartOf="parent">
 
-        <!-- Gallery Button -->
-        <com.google.android.material.card.MaterialCardView
-            android:id="@+id/galleryButton"
-            android:layout_width="56dp"
-            android:layout_height="56dp"
-            android:layout_marginEnd="48dp"
-            android:clickable="true"
-            android:focusable="true"
-            app:cardBackgroundColor="#33FFFFFF"
-            app:cardCornerRadius="12dp"
-            app:cardElevation="0dp"
-            app:strokeColor="#66FFFFFF"
-            app:strokeWidth="2dp">
-
-            <ImageView
-                android:layout_width="32dp"
-                android:layout_height="32dp"
-                android:layout_gravity="center"
-                android:src="@drawable/ic_gallery"
-                android:tint="@color/white" />
-
-        </com.google.android.material.card.MaterialCardView>
-
-        <!-- Capture Button -->
-        <com.google.android.material.button.MaterialButton
-            android:id="@+id/captureButton"
-            android:layout_width="80dp"
-            android:layout_height="80dp"
-            android:insetLeft="0dp"
-            android:insetTop="0dp"
-            android:insetRight="0dp"
-            android:insetBottom="0dp"
-            app:backgroundTint="@color/white"
-            app:cornerRadius="40dp"
-            app:elevation="8dp"
-            app:icon="@drawable/ic_camera_shutter"
-            app:iconGravity="textStart"
-            app:iconPadding="0dp"
-            app:iconSize="40dp"
-            app:iconTint="@color/black"
-            app:strokeColor="#33000000"
-            app:strokeWidth="3dp" />
-
-        <!-- Switch Camera Button -->
-        <com.google.android.material.card.MaterialCardView
+        <Button
             android:id="@+id/switchCameraButton"
-            android:layout_width="56dp"
-            android:layout_height="56dp"
-            android:layout_marginStart="48dp"
-            android:clickable="true"
-            android:focusable="true"
-            app:cardBackgroundColor="#33FFFFFF"
-            app:cardCornerRadius="12dp"
-            app:cardElevation="0dp"
-            app:strokeColor="#66FFFFFF"
-            app:strokeWidth="2dp">
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_marginEnd="8dp"
+            android:layout_weight="1"
+            android:text="Switch Camera" />
 
-            <ImageView
-                android:layout_width="32dp"
-                android:layout_height="32dp"
-                android:layout_gravity="center"
-                android:src="@drawable/ic_switch_camera"
-                android:tint="@color/white" />
-
-        </com.google.android.material.card.MaterialCardView>
+        <Button
+            android:id="@+id/captureButton"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="8dp"
+            android:layout_weight="1"
+            android:text="Capture" />
 
     </LinearLayout>
-
-    <!-- Mode Selector -->
-    <HorizontalScrollView
-        android:id="@+id/modeSelectorScrollView"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:layout_marginBottom="8dp"
-        android:scrollbars="none"
-        app:layout_constraintBottom_toTopOf="@+id/bottomControlsBar"
-        app:layout_constraintEnd_toEndOf="parent"
-        app:layout_constraintStart_toStartOf="parent">
-
-        <com.google.android.material.chip.ChipGroup
-            android:id="@+id/modeChipGroup"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:paddingStart="16dp"
-            android:paddingEnd="16dp"
-            app:chipSpacingHorizontal="8dp"
-            app:selectionRequired="true"
-            app:singleSelection="true">
-
-            <com.google.android.material.chip.Chip
-                android:id="@+id/autoModeChip"
-                style="@style/Widget.Material3.Chip.Filter"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:text="AUTO"
-                android:textColor="@color/white"
-                app:chipBackgroundColor="@color/chip_background_selector"
-                app:chipStrokeColor="@color/chip_stroke_selector" />
-
-            <com.google.android.material.chip.Chip
-                android:id="@+id/proModeChip"
-                style="@style/Widget.Material3.Chip.Filter"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:checked="true"
-                android:text="PRO"
-                android:textColor="@color/white"
-                app:chipBackgroundColor="@color/chip_background_selector"
-                app:chipStrokeColor="@color/chip_stroke_selector" />
-
-            <com.google.android.material.chip.Chip
-                android:id="@+id/portraitModeChip"
-                style="@style/Widget.Material3.Chip.Filter"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:text="PORTRAIT"
-                android:textColor="@color/white"
-                app:chipBackgroundColor="@color/chip_background_selector"
-                app:chipStrokeColor="@color/chip_stroke_selector" />
-
-            <com.google.android.material.chip.Chip
-                android:id="@+id/nightModeChip"
-                style="@style/Widget.Material3.Chip.Filter"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:text="NIGHT"
-                android:textColor="@color/white"
-                app:chipBackgroundColor="@color/chip_background_selector"
-                app:chipStrokeColor="@color/chip_stroke_selector" />
-
-            <com.google.android.material.chip.Chip
-                android:id="@+id/videoModeChip"
-                style="@style/Widget.Material3.Chip.Filter"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:text="VIDEO"
-                android:textColor="@color/white"
-                app:chipBackgroundColor="@color/chip_background_selector"
-                app:chipStrokeColor="@color/chip_stroke_selector" />
-
-        </com.google.android.material.chip.ChipGroup>
-
-    </HorizontalScrollView>
 
 </androidx.constraintlayout.widget.ConstraintLayout>
 
 
-----
-
-colors.xml
-
-<?xml version="1.0" encoding="utf-8"?>
-<resources>
-    <!-- Primary Colors -->
-    <color name="purple_200">#FFBB86FC</color>
-    <color name="purple_500">#FF6200EE</color>
-    <color name="purple_700">#FF3700B3</color>
-    <color name="teal_200">#FF03DAC5</color>
-    <color name="teal_700">#FF018786</color>
-    <color name="black">#FF000000</color>
-    <color name="white">#FFFFFFFF</color>
-    
-    <!-- Camera UI Colors -->
-    <color name="accent_orange">#FFFF6E40</color>
-    <color name="accent_blue">#FF40C4FF</color>
-    <color name="accent_yellow">#FFFFAB40</color>
-    <color name="accent_green">#FF00E676</color>
-    <color name="accent_purple">#FFE040FB</color>
-    
-    <!-- Overlay Colors -->
-    <color name="overlay_dark">#E6000000</color>
-    <color name="overlay_light">#33FFFFFF</color>
-    <color name="control_background">#66000000</color>
-    
-    <!-- Material You inspired colors -->
-    <color name="surface_dark">#1A1A1A</color>
-    <color name="on_surface">#E1E1E1</color>
-    <color name="surface_variant">#2D2D2D</color>
-</resources>
 
 
---------------
-gradient_overlay_top.xml
+main kt
 
-<?xml version="1.0" encoding="utf-8"?>
-<shape xmlns:android="http://schemas.android.com/apk/res/android">
-    <gradient
-        android:angle="270"
-        android:endColor="#00000000"
-        android:startColor="#CC000000"
-        android:type="linear" />
-</shape>
+package com.example.camerax2
 
---------------
+import android.Manifest
+import android.annotation.SuppressLint
+import android.content.ContentValues
+import android.content.pm.PackageManager
+import android.hardware.camera2.CameraCharacteristics
+import android.hardware.camera2.CameraMetadata
+import android.hardware.camera2.CaptureRequest
+import android.os.Build
+import android.os.Bundle
+import android.provider.MediaStore
+import android.util.Log
+import android.util.Range
+import android.view.MotionEvent
+import android.view.View
+import android.widget.AdapterView
+import android.widget.ArrayAdapter
+import android.widget.SeekBar
+import android.widget.Toast
+import androidx.appcompat.app.AppCompatActivity
+import androidx.camera.camera2.interop.Camera2CameraControl
+import androidx.camera.camera2.interop.Camera2CameraInfo
+import androidx.camera.camera2.interop.CaptureRequestOptions
+import androidx.camera.core.*
+import androidx.camera.lifecycle.ProcessCameraProvider
+import androidx.core.app.ActivityCompat
+import androidx.core.content.ContextCompat
+import com.example.camerax2.databinding.ActivityMainBinding
+import java.text.SimpleDateFormat
+import java.util.*
+import java.util.concurrent.ExecutorService
+import java.util.concurrent.Executors
 
-gradient_overlay_bottom.xml
+class MainActivity : AppCompatActivity() {
 
-<?xml version="1.0" encoding="utf-8"?>
-<shape xmlns:android="http://schemas.android.com/apk/res/android">
-    <gradient
-        android:angle="90"
-        android:endColor="#00000000"
-        android:startColor="#CC000000"
-        android:type="linear" />
-</shape>
----
+    private lateinit var binding: ActivityMainBinding
+    private lateinit var cameraExecutor: ExecutorService
 
+    private var imageCapture: ImageCapture? = null
+    private var camera: Camera? = null
+    private var cameraProvider: ProcessCameraProvider? = null
+    private var cameraSelector = CameraSelector.DEFAULT_BACK_CAMERA
 
-control_button_background.xml
+    @SuppressLint("UnsafeOptInUsageError")
+    private var camera2CameraControl: Camera2CameraControl? = null
 
-<?xml version="1.0" encoding="utf-8"?>
-<ripple xmlns:android="http://schemas.android.com/apk/res/android"
-    android:color="@color/white">
-    <item>
-        <shape android:shape="oval">
-            <solid android:color="#33FFFFFF" />
-        </shape>
-    </item>
-</ripple>
----
+    private var isoRange: Range<Int>? = null
+    private var exposureTimeRange: Range<Long>? = null
+    private var minFocusDistance: Float = 0f
 
-chip_background_selector.xml
+    // Store ISO bounds separately for easier access
+    private var isoLower: Int = 0
+    private var isoUpper: Int = 0
 
-<?xml version="1.0" encoding="utf-8"?>
-<selector xmlns:android="http://schemas.android.com/apk/res/android">
-    <item android:color="#66FFFFFF" android:state_checked="true" />
-    <item android:color="#1AFFFFFF" />
+    // Track manual/auto modes
+    private var isExposureAuto = true  // For ISO and Shutter Speed together
+    private var isFocusAuto = true
 
---------------
+    companion object {
+        private const val TAG = "camerax2"
+        private const val FILENAME_FORMAT = "yyyy-MM-dd-HH-mm-ss-SSS"
+        private const val REQUEST_CODE_PERMISSIONS = 10
+        private val REQUIRED_PERMISSIONS = mutableListOf(
+            Manifest.permission.CAMERA
+        ).apply {
+            if (Build.VERSION.SDK_INT <= Build.VERSION_CODES.P) {
+                add(Manifest.permission.WRITE_EXTERNAL_STORAGE)
+            }
+        }.toTypedArray()
+    }
 
-chip_stroke_selector.xml
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        binding = ActivityMainBinding.inflate(layoutInflater)
+        setContentView(binding.root)
 
-<?xml version="1.0" encoding="utf-8"?>
-<selector xmlns:android="http://schemas.android.com/apk/res/android">
-    <item android:color="@color/white" android:state_checked="true" />
-    <item android:color="#66FFFFFF" />
-</selector>
+        cameraExecutor = Executors.newSingleThreadExecutor()
 
-------------------
+        if (allPermissionsGranted()) {
+            startCamera()
+        } else {
+            ActivityCompat.requestPermissions(this, REQUIRED_PERMISSIONS, REQUEST_CODE_PERMISSIONS)
+        }
 
-ic_flash_auto.xml
+        binding.captureButton.setOnClickListener { takePhoto() }
+        binding.switchCameraButton.setOnClickListener { switchCamera() }
 
-<vector xmlns:android="http://schemas.android.com/apk/res/android"
-    android:width="24dp"
-    android:height="24dp"
-    android:viewportWidth="24"
-    android:viewportHeight="24">
-    <path
-        android:fillColor="#FFFFFF"
-        android:pathData="M3,2V4H5L8.56,11.59L5.1,17.64C4.52,18.62 5.21,20 6.34,20H19V18H6.34L9,13.5H15.55C16.3,13.5 16.96,13.09 17.3,12.47L20.88,6.5C21.25,5.82 20.77,5 20,5H10.21L9.27,3C8.94,2.38 8.3,2 7.6,2H3M7,13.5V17.5H11V13.5H7M17.5,9.5L12.5,14.5V11H10
+        setupProControlsListeners()
+    }
 
-</selector>
+    private fun allPermissionsGranted() = REQUIRED_PERMISSIONS.all {
+        ContextCompat.checkSelfPermission(baseContext, it) == PackageManager.PERMISSION_GRANTED
+    }
+
+    override fun onRequestPermissionsResult(
+        requestCode: Int, permissions: Array<String>, grantResults: IntArray
+    ) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (requestCode == REQUEST_CODE_PERMISSIONS) {
+            if (allPermissionsGranted()) {
+                startCamera()
+            } else {
+                Toast.makeText(this, "Permissions not granted by the user.", Toast.LENGTH_SHORT).show()
+                finish()
+            }
+        }
+    }
+
+    @SuppressLint("ClickableViewAccessibility")
+    private fun startCamera() {
+        val cameraProviderFuture = ProcessCameraProvider.getInstance(this)
+        cameraProviderFuture.addListener({
+            cameraProvider = cameraProviderFuture.get()
+            bindCameraUseCases()
+        }, ContextCompat.getMainExecutor(this))
+
+        binding.previewView.setOnTouchListener { _, event ->
+            if (event.action == MotionEvent.ACTION_DOWN) {
+                camera?.let { cam ->
+                    val factory = binding.previewView.meteringPointFactory
+                    val point = factory.createPoint(event.x, event.y)
+                    val action = FocusMeteringAction.Builder(point, FocusMeteringAction.FLAG_AF)
+                        .setAutoCancelDuration(5, java.util.concurrent.TimeUnit.SECONDS)
+                        .build()
+                    cam.cameraControl.startFocusAndMetering(action)
+                }
+                return@setOnTouchListener true
+            }
+            false
+        }
+    }
+
+    @SuppressLint("UnsafeOptInUsageError")
+    private fun bindCameraUseCases() {
+        val currentCameraProvider = cameraProvider ?: run {
+            Log.e(TAG, "Camera initialization failed.")
+            Toast.makeText(this, "Camera initialization failed.", Toast.LENGTH_SHORT).show()
+            return
+        }
+
+        val preview = Preview.Builder()
+            .build()
+            .also {
+                it.setSurfaceProvider(binding.previewView.surfaceProvider)
+            }
+
+        imageCapture = ImageCapture.Builder()
+            .setCaptureMode(ImageCapture.CAPTURE_MODE_MAXIMIZE_QUALITY)
+            .build()
+
+        try {
+            currentCameraProvider.unbindAll()
+            camera = currentCameraProvider.bindToLifecycle(
+                this, cameraSelector, preview, imageCapture
+            )
+
+            camera?.let {
+                camera2CameraControl = Camera2CameraControl.from(it.cameraControl)
+            }
+
+            setupCameraInfoAndControls()
+
+        } catch (exc: Exception) {
+            Log.e(TAG, "Use case binding failed", exc)
+            Toast.makeText(this, "Could not start camera: ${exc.message}", Toast.LENGTH_LONG).show()
+        }
+    }
+
+    @SuppressLint("UnsafeOptInUsageError")
+    private fun setupCameraInfoAndControls() {
+        val camInfo = camera?.cameraInfo ?: return
+        val cam2Info = Camera2CameraInfo.from(camInfo)
+
+        // EV Compensation
+        val exposureState = camInfo.exposureState
+        if (exposureState.isExposureCompensationSupported) {
+            val evRange = exposureState.exposureCompensationRange
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                binding.evSeekBar.min = evRange.lower
+            }
+            binding.evSeekBar.max = evRange.upper
+            binding.evSeekBar.progress = exposureState.exposureCompensationIndex - evRange.lower
+            val evValue = exposureState.exposureCompensationIndex * exposureState.exposureCompensationStep.toFloat()
+            binding.evValueText.text = "%+.1f EV".format(evValue)
+            binding.evSeekBar.visibility = View.VISIBLE
+            binding.evLabel.visibility = View.VISIBLE
+            binding.evValueText.visibility = View.VISIBLE
+            binding.evAutoButton.visibility = View.VISIBLE
+        } else {
+            binding.evSeekBar.visibility = View.GONE
+            binding.evLabel.visibility = View.GONE
+            binding.evValueText.visibility = View.GONE
+            binding.evAutoButton.visibility = View.GONE
+        }
+
+        // Zoom
+        val zoomState = camInfo.zoomState.value
+        if (zoomState != null && (zoomState.maxZoomRatio > zoomState.minZoomRatio)) {
+            val minZoom = (zoomState.minZoomRatio * 10).toInt()
+            val maxZoom = (zoomState.maxZoomRatio * 10).toInt()
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                binding.zoomSeekBar.min = minZoom
+            }
+            binding.zoomSeekBar.max = maxZoom
+            binding.zoomSeekBar.progress = (zoomState.zoomRatio * 10).toInt() - minZoom
+            binding.zoomValueText.text = "%.1fx".format(zoomState.zoomRatio)
+            binding.zoomSeekBar.visibility = View.VISIBLE
+            binding.zoomLabel.visibility = View.VISIBLE
+            binding.zoomValueText.visibility = View.VISIBLE
+            binding.zoomAutoButton.visibility = View.VISIBLE
+        } else {
+            binding.zoomSeekBar.visibility = View.GONE
+            binding.zoomLabel.visibility = View.GONE
+            binding.zoomValueText.visibility = View.GONE
+            binding.zoomAutoButton.visibility = View.GONE
+        }
+
+        // Flash Mode
+        if (camInfo.hasFlashUnit()) {
+            val flashModes = listOf("AUTO", "ON", "OFF")
+            val adapter = ArrayAdapter(this, android.R.layout.simple_spinner_item, flashModes)
+            adapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item)
+            binding.flashModeSpinner.adapter = adapter
+            binding.flashModeSpinner.setSelection(
+                when(imageCapture?.flashMode) {
+                    ImageCapture.FLASH_MODE_ON -> 1
+                    ImageCapture.FLASH_MODE_OFF -> 2
+                    else -> 0
+                }
+            )
+            binding.flashModeSpinner.visibility = View.VISIBLE
+            binding.flashLabel.visibility = View.VISIBLE
+        } else {
+            binding.flashModeSpinner.visibility = View.GONE
+            binding.flashLabel.visibility = View.GONE
+        }
+
+        // Manual Focus
+        minFocusDistance = cam2Info.getCameraCharacteristic(CameraCharacteristics.LENS_INFO_MINIMUM_FOCUS_DISTANCE) ?: 0f
+        val focusSupported = minFocusDistance > 0f ||
+                (cam2Info.getCameraCharacteristic(CameraCharacteristics.LENS_INFO_AVAILABLE_FOCAL_LENGTHS)?.isNotEmpty() == true &&
+                        cam2Info.getCameraCharacteristic(CameraCharacteristics.LENS_INFO_MINIMUM_FOCUS_DISTANCE) != null)
+
+        if (focusSupported) {
+            binding.focusSeekBar.max = 100
+            binding.focusSeekBar.progress = 0
+            binding.focusValueText.text = "Auto"
+            binding.focusSeekBar.visibility = View.VISIBLE
+            binding.focusLabel.visibility = View.VISIBLE
+            binding.focusValueText.visibility = View.VISIBLE
+            binding.focusAutoButton.visibility = View.VISIBLE
+            // Start with autofocus enabled
+            binding.focusSeekBar.isEnabled = false
+            binding.focusAutoButton.text = "MAN"
+        } else {
+            binding.focusSeekBar.visibility = View.GONE
+            binding.focusLabel.visibility = View.GONE
+            binding.focusValueText.visibility = View.GONE
+            binding.focusAutoButton.visibility = View.GONE
+        }
+
+        // ISO
+        isoRange = cam2Info.getCameraCharacteristic(CameraCharacteristics.SENSOR_INFO_SENSITIVITY_RANGE)
+        if (isoRange != null) {
+            isoLower = isoRange!!.lower
+            isoUpper = isoRange!!.upper
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                binding.isoSeekBar.min = isoLower
+            }
+            binding.isoSeekBar.max = isoUpper
+            binding.isoSeekBar.progress = isoLower
+            binding.isoValueText.text = "Auto"
+            binding.isoSeekBar.visibility = View.VISIBLE
+            binding.isoLabel.visibility = View.VISIBLE
+            binding.isoValueText.visibility = View.VISIBLE
+            binding.isoAutoButton.visibility = View.VISIBLE
+            // Start in auto mode
+            binding.isoSeekBar.isEnabled = false
+            binding.isoAutoButton.text = "MAN"
+        } else {
+            binding.isoSeekBar.visibility = View.GONE
+            binding.isoLabel.visibility = View.GONE
+            binding.isoValueText.visibility = View.GONE
+            binding.isoAutoButton.visibility = View.GONE
+        }
+
+        // Shutter Speed
+        exposureTimeRange = cam2Info.getCameraCharacteristic(CameraCharacteristics.SENSOR_INFO_EXPOSURE_TIME_RANGE)
+        if (exposureTimeRange != null) {
+            val minEtMs = exposureTimeRange!!.lower / 1_000_000L
+            val maxEtMs = minOf(exposureTimeRange!!.upper / 1_000_000L, 2000L)
+
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                binding.shutterSpeedSeekBar.min = 0
+            }
+            binding.shutterSpeedSeekBar.max = 100
+
+            binding.shutterSpeedSeekBar.progress = 0
+            binding.shutterSpeedValueText.text = "Auto"
+
+            binding.shutterSpeedSeekBar.visibility = View.VISIBLE
+            binding.shutterSpeedLabel.visibility = View.VISIBLE
+            binding.shutterSpeedValueText.visibility = View.VISIBLE
+            binding.shutterSpeedAutoButton.visibility = View.VISIBLE
+            // Start in auto mode
+            binding.shutterSpeedSeekBar.isEnabled = false
+            binding.shutterSpeedAutoButton.text = "MAN"
+        } else {
+            binding.shutterSpeedSeekBar.visibility = View.GONE
+            binding.shutterSpeedLabel.visibility = View.GONE
+            binding.shutterSpeedValueText.visibility = View.GONE
+            binding.shutterSpeedAutoButton.visibility = View.GONE
+        }
+
+        // White Balance
+        val awbModes = cam2Info.getCameraCharacteristic(CameraCharacteristics.CONTROL_AWB_AVAILABLE_MODES)
+        if (awbModes != null && awbModes.isNotEmpty()) {
+            val awbModeStrings = awbModes.map { modeToStringAWB(it) }
+            val adapter = ArrayAdapter(this, android.R.layout.simple_spinner_item, awbModeStrings)
+            adapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item)
+            binding.whiteBalanceSpinner.adapter = adapter
+
+            // Default to AUTO
+            val autoIndex = awbModes.indexOf(CameraMetadata.CONTROL_AWB_MODE_AUTO)
+            binding.whiteBalanceSpinner.setSelection(if (autoIndex != -1) autoIndex else 0)
+            binding.whiteBalanceSpinner.visibility = View.VISIBLE
+            binding.whiteBalanceLabel.visibility = View.VISIBLE
+            binding.whiteBalanceAutoButton.visibility = View.VISIBLE
+        } else {
+            binding.whiteBalanceSpinner.visibility = View.GONE
+            binding.whiteBalanceLabel.visibility = View.GONE
+            binding.whiteBalanceAutoButton.visibility = View.GONE
+        }
+
+        // Update UI to show current auto values periodically
+        updateAutoModeValues()
+    }
+
+    private fun modeToStringAWB(mode: Int): String {
+        return when (mode) {
+            CameraMetadata.CONTROL_AWB_MODE_OFF -> "OFF"
+            CameraMetadata.CONTROL_AWB_MODE_AUTO -> "AUTO"
+            CameraMetadata.CONTROL_AWB_MODE_INCANDESCENT -> "INCANDESCENT"
+            CameraMetadata.CONTROL_AWB_MODE_FLUORESCENT -> "FLUORESCENT"
+            CameraMetadata.CONTROL_AWB_MODE_WARM_FLUORESCENT -> "WARM_FLUORESCENT"
+            CameraMetadata.CONTROL_AWB_MODE_DAYLIGHT -> "DAYLIGHT"
+            CameraMetadata.CONTROL_AWB_MODE_CLOUDY_DAYLIGHT -> "CLOUDY_DAYLIGHT"
+            CameraMetadata.CONTROL_AWB_MODE_TWILIGHT -> "TWILIGHT"
+            CameraMetadata.CONTROL_AWB_MODE_SHADE -> "SHADE"
+            else -> "UNKNOWN ($mode)"
+        }
+    }
+
+    private fun stringToModeAWB(modeString: String): Int {
+        return when (modeString) {
+            "OFF" -> CameraMetadata.CONTROL_AWB_MODE_OFF
+            "AUTO" -> CameraMetadata.CONTROL_AWB_MODE_AUTO
+            "INCANDESCENT" -> CameraMetadata.CONTROL_AWB_MODE_INCANDESCENT
+            "FLUORESCENT" -> CameraMetadata.CONTROL_AWB_MODE_FLUORESCENT
+            "WARM_FLUORESCENT" -> CameraMetadata.CONTROL_AWB_MODE_WARM_FLUORESCENT
+            "DAYLIGHT" -> CameraMetadata.CONTROL_AWB_MODE_DAYLIGHT
+            "CLOUDY_DAYLIGHT" -> CameraMetadata.CONTROL_AWB_MODE_CLOUDY_DAYLIGHT
+            "TWILIGHT" -> CameraMetadata.CONTROL_AWB_MODE_TWILIGHT
+            "SHADE" -> CameraMetadata.CONTROL_AWB_MODE_SHADE
+            else -> CameraMetadata.CONTROL_AWB_MODE_AUTO
+        }
+    }
+
+    private fun formatShutterSpeed(exposureTimeNs: Long): String {
+        val exposureTimeMs = exposureTimeNs / 1_000_000.0
+        return when {
+            exposureTimeMs < 1 -> "1/${(1000 / exposureTimeMs).toInt()}s"
+            exposureTimeMs < 1000 -> "${exposureTimeMs.toInt()}ms"
+            else -> "%.1fs".format(exposureTimeMs / 1000)
+        }
+    }
+
+    private fun updateAutoModeValues() {
+        // This would ideally read actual camera values, but CameraX doesn't expose them easily
+        // In a real implementation, you might use Camera2 API directly for this
+        if (isExposureAuto) {
+            binding.isoValueText.text = "Auto (Dynamic)"
+            binding.shutterSpeedValueText.text = "Auto (Dynamic)"
+        }
+        if (isFocusAuto) {
+            binding.focusValueText.text = "Auto (Continuous)"
+        }
+    }
+
+    @SuppressLint("UnsafeOptInUsageError")
+    private fun setupProControlsListeners() {
+        // EV Compensation
+        binding.evSeekBar.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+            override fun onProgressChanged(seekBar: SeekBar?, progress: Int, fromUser: Boolean) {
+                if (fromUser) {
+                    val evRange = camera?.cameraInfo?.exposureState?.exposureCompensationRange
+                    val actualProgress = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                        progress
+                    } else {
+                        progress + (evRange?.lower ?: 0)
+                    }
+                    camera?.cameraControl?.setExposureCompensationIndex(actualProgress)
+                    val evValue = actualProgress * (camera?.cameraInfo?.exposureState?.exposureCompensationStep?.toFloat() ?: 0f)
+                    binding.evValueText.text = "%+.1f EV".format(evValue)
+                }
+            }
+            override fun onStartTrackingTouch(seekBar: SeekBar?) {}
+            override fun onStopTrackingTouch(seekBar: SeekBar?) {}
+        })
+
+        // EV Auto Button
+        binding.evAutoButton.setOnClickListener {
+            camera?.cameraControl?.setExposureCompensationIndex(0)
+            val evRange = camera?.cameraInfo?.exposureState?.exposureCompensationRange
+            binding.evSeekBar.progress = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                0
+            } else {
+                0 - (evRange?.lower ?: 0)
+            }
+            binding.evValueText.text = "+0.0 EV"
+        }
+
+        // Zoom
+        binding.zoomSeekBar.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+            override fun onProgressChanged(seekBar: SeekBar?, progress: Int, fromUser: Boolean) {
+                if (fromUser) {
+                    val zoomState = camera?.cameraInfo?.zoomState?.value
+                    val minZoom = (zoomState?.minZoomRatio ?: 1f) * 10f
+                    val actualProgress = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                        progress / 10f
+                    } else {
+                        (progress + minZoom.toInt()) / 10f
+                    }
+                    camera?.cameraControl?.setZoomRatio(actualProgress.coerceIn(
+                        zoomState?.minZoomRatio ?: 1f,
+                        zoomState?.maxZoomRatio ?: 1f
+                    ))
+                    binding.zoomValueText.text = "%.1fx".format(actualProgress)
+                }
+            }
+            override fun onStartTrackingTouch(seekBar: SeekBar?) {}
+            override fun onStopTrackingTouch(seekBar: SeekBar?) {}
+        })
+
+        // Zoom Auto Button (Reset to 1.0x)
+        binding.zoomAutoButton.setOnClickListener {
+            camera?.cameraControl?.setZoomRatio(1.0f)
+            val zoomState = camera?.cameraInfo?.zoomState?.value
+            val minZoom = (zoomState?.minZoomRatio ?: 1f) * 10f
+            binding.zoomSeekBar.progress = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                10
+            } else {
+                (10 - minZoom.toInt())
+            }
+            binding.zoomValueText.text = "1.0x"
+        }
+
+        // Flash Mode
+        binding.flashModeSpinner.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
+            override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) {
+                imageCapture?.flashMode = when (position) {
+                    0 -> ImageCapture.FLASH_MODE_AUTO
+                    1 -> ImageCapture.FLASH_MODE_ON
+                    2 -> ImageCapture.FLASH_MODE_OFF
+                    else -> ImageCapture.FLASH_MODE_AUTO
+                }
+            }
+            override fun onNothingSelected(parent: AdapterView<*>?) {}
+        }
+
+        // Manual Focus
+        binding.focusSeekBar.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+            override fun onProgressChanged(seekBar: SeekBar?, progress: Int, fromUser: Boolean) {
+                if (fromUser && (minFocusDistance > 0f || camera2CameraControl != null)) {
+                    val builder = CaptureRequestOptions.Builder()
+                    if (progress == 0) {
+                        builder.setCaptureRequestOption(CaptureRequest.CONTROL_AF_MODE, CameraMetadata.CONTROL_AF_MODE_CONTINUOUS_PICTURE)
+                        binding.focusValueText.text = "Auto"
+                    } else {
+                        val focusDistanceValue = (progress / 100.0f) * minFocusDistance
+                        builder.setCaptureRequestOption(CaptureRequest.LENS_FOCUS_DISTANCE, focusDistanceValue)
+                        builder.setCaptureRequestOption(CaptureRequest.CONTROL_AF_MODE, CameraMetadata.CONTROL_AF_MODE_OFF)
+                        binding.focusValueText.text = "%.1fm".format(1.0f / focusDistanceValue)
+                    }
+                    camera2CameraControl?.addCaptureRequestOptions(builder.build())?.addListener({}, ContextCompat.getMainExecutor(this@MainActivity))
+                }
+            }
+            override fun onStartTrackingTouch(seekBar: SeekBar?) {}
+            override fun onStopTrackingTouch(seekBar: SeekBar?) {}
+        })
+
+        // Focus Auto/Manual Toggle Button
+        binding.focusAutoButton.setOnClickListener {
+            if (isFocusAuto) {
+                // Switch to manual mode
+                isFocusAuto = false
+                binding.focusSeekBar.isEnabled = true
+                binding.focusAutoButton.text = "AUTO"
+                binding.focusSeekBar.progress = 50 // Middle position
+            } else {
+                // Switch to auto mode
+                isFocusAuto = true
+                binding.focusSeekBar.isEnabled = false
+                binding.focusAutoButton.text = "MAN"
+                binding.focusSeekBar.progress = 0
+                val builder = CaptureRequestOptions.Builder()
+                builder.setCaptureRequestOption(CaptureRequest.CONTROL_AF_MODE, CameraMetadata.CONTROL_AF_MODE_CONTINUOUS_PICTURE)
+                camera2CameraControl?.addCaptureRequestOptions(builder.build())?.addListener({}, ContextCompat.getMainExecutor(this@MainActivity))
+                binding.focusValueText.text = "Auto (Continuous)"
+            }
+        }
+
+        // ISO
+        binding.isoSeekBar.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+            override fun onProgressChanged(seekBar: SeekBar?, progress: Int, fromUser: Boolean) {
+                if (fromUser && isoRange != null) {
+                    val actualIsoValue = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                        progress
+                    } else {
+                        progress + isoLower
+                    }
+                    val isoValue = actualIsoValue.coerceIn(isoLower, isoUpper)
+                    val builder = CaptureRequestOptions.Builder()
+                        .setCaptureRequestOption(CaptureRequest.SENSOR_SENSITIVITY, isoValue)
+                        .setCaptureRequestOption(CaptureRequest.CONTROL_AE_MODE, CameraMetadata.CONTROL_AE_MODE_OFF)
+                    camera2CameraControl?.addCaptureRequestOptions(builder.build())?.addListener({}, ContextCompat.getMainExecutor(this@MainActivity))
+                    binding.isoValueText.text = "ISO $isoValue"
+                }
+            }
+            override fun onStartTrackingTouch(seekBar: SeekBar?) {}
+            override fun onStopTrackingTouch(seekBar: SeekBar?) {}
+        })
+
+        // ISO Auto/Manual Toggle
+        binding.isoAutoButton.setOnClickListener {
+            if (isExposureAuto) {
+                // Switch to manual mode
+                isExposureAuto = false
+                binding.isoSeekBar.isEnabled = true
+                binding.shutterSpeedSeekBar.isEnabled = true
+                binding.isoAutoButton.text = "AUTO"
+                binding.shutterSpeedAutoButton.text = "AUTO"
+                // Set to a reasonable manual value
+                binding.isoSeekBar.progress = minOf(400, isoUpper)
+                binding.shutterSpeedSeekBar.progress = 50
+            } else {
+                // Switch to auto mode
+                isExposureAuto = true
+                binding.isoSeekBar.isEnabled = false
+                binding.shutterSpeedSeekBar.isEnabled = false
+                binding.isoAutoButton.text = "MAN"
+                binding.shutterSpeedAutoButton.text = "MAN"
+                val builder = CaptureRequestOptions.Builder()
+                    .setCaptureRequestOption(CaptureRequest.CONTROL_AE_MODE, CameraMetadata.CONTROL_AE_MODE_ON)
+                camera2CameraControl?.addCaptureRequestOptions(builder.build())?.addListener({}, ContextCompat.getMainExecutor(this@MainActivity))
+                binding.isoValueText.text = "Auto (Dynamic)"
+                binding.shutterSpeedValueText.text = "Auto (Dynamic)"
+            }
+        }
+
+        // Shutter Speed
+        binding.shutterSpeedSeekBar.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+            override fun onProgressChanged(seekBar: SeekBar?, progressValue: Int, fromUser: Boolean) {
+                if (fromUser && exposureTimeRange != null && !isExposureAuto) {
+                    val minEtNs = exposureTimeRange!!.lower
+                    val maxEtNsForUi = minOf(exposureTimeRange!!.upper, 2_000_000_000L)
+
+                    val exposureTimeNs = minEtNs + (((maxEtNsForUi - minEtNs) * progressValue) / 100L)
+                    val coercedExposureTime = exposureTimeNs.coerceIn(minEtNs, exposureTimeRange!!.upper)
+
+                    val builder = CaptureRequestOptions.Builder()
+                        .setCaptureRequestOption(CaptureRequest.SENSOR_EXPOSURE_TIME, coercedExposureTime)
+                        .setCaptureRequestOption(CaptureRequest.CONTROL_AE_MODE, CameraMetadata.CONTROL_AE_MODE_OFF)
+                    camera2CameraControl?.addCaptureRequestOptions(builder.build())?.addListener({}, ContextCompat.getMainExecutor(this@MainActivity))
+                    binding.shutterSpeedValueText.text = formatShutterSpeed(coercedExposureTime)
+                }
+            }
+            override fun onStartTrackingTouch(seekBar: SeekBar?) {}
+            override fun onStopTrackingTouch(seekBar: SeekBar?) {}
+        })
+
+        // Shutter Speed Auto/Manual Toggle (same as ISO since they're linked)
+        binding.shutterSpeedAutoButton.setOnClickListener {
+            binding.isoAutoButton.performClick()
+        }
+
+        // White Balance
+        binding.whiteBalanceSpinner.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
+            override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) {
+                val selectedModeString = parent?.getItemAtPosition(position) as? String ?: return
+                val awbMode = stringToModeAWB(selectedModeString)
+                val builder = CaptureRequestOptions.Builder()
+                    .setCaptureRequestOption(CaptureRequest.CONTROL_AWB_MODE, awbMode)
+                camera2CameraControl?.addCaptureRequestOptions(builder.build())?.addListener({}, ContextCompat.getMainExecutor(this@MainActivity))
+            }
+            override fun onNothingSelected(parent: AdapterView<*>?) {}
+        }
+
+        // White Balance Auto Button
+        binding.whiteBalanceAutoButton.setOnClickListener {
+            val awbModes = binding.whiteBalanceSpinner.adapter
+            for (i in 0 until awbModes.count) {
+                if (awbModes.getItem(i).toString() == "AUTO") {
+                    binding.whiteBalanceSpinner.setSelection(i)
+                    break
+                }
+            }
+        }
+    }
+
+    private fun takePhoto() {
+        val imageCapture = imageCapture ?: return
+
+        val name = SimpleDateFormat(FILENAME_FORMAT, Locale.US).format(System.currentTimeMillis())
+        val contentValues = ContentValues().apply {
+            put(MediaStore.MediaColumns.DISPLAY_NAME, name)
+            put(MediaStore.MediaColumns.MIME_TYPE, "image/jpeg")
+            if (Build.VERSION.SDK_INT > Build.VERSION_CODES.P) {
+                put(MediaStore.Images.Media.RELATIVE_PATH, "Pictures/ProCameraX-Image")
+            }
+        }
+
+        val outputOptions = ImageCapture.OutputFileOptions.Builder(
+            contentResolver,
+            MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
+            contentValues
+        ).build()
+
+        imageCapture.takePicture(
+            outputOptions,
+            ContextCompat.getMainExecutor(this),
+            object : ImageCapture.OnImageSavedCallback {
+                override fun onError(exc: ImageCaptureException) {
+                    Log.e(TAG, "Photo capture failed: ${exc.message}", exc)
+                    Toast.makeText(baseContext, "Photo capture failed: ${exc.message}", Toast.LENGTH_SHORT).show()
+                }
+
+                override fun onImageSaved(output: ImageCapture.OutputFileResults) {
+                    val msg = "Photo capture succeeded: ${output.savedUri}"
+                    Toast.makeText(baseContext, msg, Toast.LENGTH_SHORT).show()
+                    Log.d(TAG, msg)
+                }
+            }
+        )
+    }
+
+    private fun switchCamera() {
+        cameraSelector = if (cameraSelector == CameraSelector.DEFAULT_BACK_CAMERA) {
+            CameraSelector.DEFAULT_FRONT_CAMERA
+        } else {
+            CameraSelector.DEFAULT_BACK_CAMERA
+        }
+        bindCameraUseCases()
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        cameraExecutor.shutdown()
+    }
+}
