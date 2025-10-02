@@ -301,6 +301,32 @@ def format_comment_entry(comment: Dict[str, Any], description_comment: Optional[
     return f"\n\n{entry}" if entry else None
 
 
+def parse_comment_number(comment: Dict[str, Any]) -> Optional[int]:
+    number_field = comment.get("comment_number") or ""
+    match = re.search(r"(\d+)", number_field)
+    if match:
+        return int(match.group(1))
+
+    comment_id = comment.get("comment_id") or ""
+    match = re.search(r"(\d+)$", comment_id)
+    if match:
+        return int(match.group(1))
+
+    return None
+
+
+def sort_comments_by_number(comments: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    indexed_comments = list(enumerate(comments))
+
+    def sort_key(item: Any) -> Any:
+        idx, comment = item
+        number = parse_comment_number(comment)
+        return (number if number is not None else sys.maxsize, idx)
+
+    sorted_comments = sorted(indexed_comments, key=sort_key)
+    return [comment for _, comment in sorted_comments]
+
+
 def scrape_issue(
     driver: webdriver.Chrome,
     url: str,
@@ -328,7 +354,7 @@ def scrape_issue(
         except Exception:
             continue
 
-    comments_all = extract_comments_dom(driver)
+    comments_all = sort_comments_by_number(extract_comments_dom(driver))
     comments_filtered = comments_all if include_empty else [c for c in comments_all if not is_empty_comment(c)]
 
     if verbose:
@@ -456,11 +482,12 @@ def process_csv(args: argparse.Namespace) -> None:
         print("Error: 'ISSUE_ID' column not found in CSV file.")
         sys.exit(1)
 
+    if "description" not in df.columns:
+        df["description"] = ""
+    if "comments" not in df.columns:
+        df["comments"] = ""
+
     df_copy = df.copy()
-    if "description" not in df_copy.columns:
-        df_copy["description"] = ""
-    if "comments" not in df_copy.columns:
-        df_copy["comments"] = ""
 
     issue_ids = df_copy["ISSUE_ID"].astype(str).tolist()
     print(f"Found {len(issue_ids)} issue IDs")
