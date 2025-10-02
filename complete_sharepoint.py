@@ -16,7 +16,6 @@ from selenium.common.exceptions import TimeoutException, WebDriverException
 import pandas as pd
 
 
-DEFAULT_URL = "https://issuetracker.google.com/issues/446543771"
 BASE_ISSUE_URL = "https://issuetracker.google.com/issues/"
 LOGIN_BASE_URL = "https://issuetracker.google.com/issues"
 
@@ -387,7 +386,7 @@ def scrape_issue(
     }
 
 
-def process_single_issue(args: argparse.Namespace) -> None:
+def process_single_issue(args: argparse.Namespace, url: str) -> None:
     driver = build_driver(headless=args.headless)
     try:
         if args.prompt_login:
@@ -395,7 +394,7 @@ def process_single_issue(args: argparse.Namespace) -> None:
 
         result = scrape_issue(
             driver=driver,
-            url=args.url,
+            url=url,
             wait_time=args.wait_time,
             include_empty=args.include_empty,
             verbose=not args.quiet,
@@ -544,7 +543,8 @@ def process_csv(args: argparse.Namespace) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Extract comments from Google Issue Tracker using Selenium")
-    parser.add_argument("--url", default=DEFAULT_URL, help="Issue URL (default: %(default)s)")
+    parser.add_argument("--url", help="Full issue URL to scrape")
+    parser.add_argument("--issue-id", help="Issue ID appended to the base URL to form the target URL")
     parser.add_argument("--csv", help="Path to CSV file containing an ISSUE_ID column for batch processing")
     parser.add_argument("--output", default=None, help="Output CSV filename (default: auto)")
     parser.add_argument("--headless", action="store_true", help="Run Chrome headless")
@@ -557,8 +557,19 @@ def main() -> None:
 
     if args.csv:
         process_csv(args)
-    else:
-        process_single_issue(args)
+        return
+
+    target_url: Optional[str] = None
+    if args.url:
+        target_url = args.url
+    elif args.issue_id:
+        target_url = build_issue_url(str(args.issue_id))
+
+    if not target_url:
+        print("Error: provide either --url or --issue-id (or use --csv for batch mode).", file=sys.stderr)
+        sys.exit(1)
+
+    process_single_issue(args, target_url)
 
 
 if __name__ == "__main__":
