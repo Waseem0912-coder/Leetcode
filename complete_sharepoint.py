@@ -327,6 +327,64 @@ def sort_comments_by_number(comments: List[Dict[str, Any]]) -> List[Dict[str, An
     return [comment for _, comment in sorted_comments]
 
 
+def extract_description(driver: webdriver.Chrome, wait_time: int) -> str:
+    js = r"""
+const selectors = [
+  "b-issue-description div.child",
+  "issue-detail-description div.child",
+  "issue-description div.child",
+  "[aria-label='Description']",
+  "[data-section-id='description']",
+  "[data-test-id='issue-description']",
+  "issue-content .description",
+  "issue-details-panel .description",
+  "issue-header .description",
+  "issue-content .markdown-display",
+  "issue-content [class*='markdown']",
+  "issue-detail-main .markdown-display",
+  "issue-detail-main [class*='description']"
+];
+
+const isMeaningful = (txt) => txt && txt.trim().length > 0;
+
+for (const selector of selectors) {
+  const el = document.querySelector(selector);
+  if (el) {
+    const txt = el.innerText ? el.innerText.trim() : "";
+    if (isMeaningful(txt)) {
+      return txt;
+    }
+  }
+}
+
+// Try comment1-specific containers as a fallback
+const comment1 = document.getElementById('comment1');
+if (comment1) {
+  const contentCandidates = comment1.querySelectorAll('.markdown-display, .comment-content, [class*="content" i]');
+  const parts = [];
+  contentCandidates.forEach(node => {
+    const txt = node && node.innerText ? node.innerText.trim() : "";
+    if (isMeaningful(txt)) {
+      parts.push(txt);
+    }
+  });
+  if (parts.length) {
+    return parts.join('\n').replace(/\n{3,}/g, '\n\n');
+  }
+}
+
+return "";
+"""
+
+    try:
+        description_text = driver.execute_script(js)
+        if isinstance(description_text, str):
+            return description_text.strip()
+    except Exception:
+        pass
+    return ""
+
+
 def scrape_issue(
     driver: webdriver.Chrome,
     url: str,
@@ -354,6 +412,8 @@ def scrape_issue(
         except Exception:
             continue
 
+    description_text = extract_description(driver, wait_time)
+
     comments_all = sort_comments_by_number(extract_comments_dom(driver))
     comments_filtered = comments_all if include_empty else [c for c in comments_all if not is_empty_comment(c)]
 
@@ -367,9 +427,7 @@ def scrape_issue(
     )
     if not description_comment and comments_filtered:
         description_comment = comments_filtered[0]
-
-    description_text = ""
-    if description_comment:
+    if not description_text and description_comment:
         description_text = description_comment.get("content", "")
 
     comment_entries: List[str] = []
