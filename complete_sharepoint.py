@@ -607,13 +607,7 @@ def process_csv(args: argparse.Namespace) -> None:
     if out_path.suffix == "":
         out_path = out_path.with_suffix(".csv")
 
-    final_df = pd.DataFrame({
-        "ISSUE_ID": df_copy["ISSUE_ID"].astype(str),
-        "description": df_copy["description"],
-        "comments": df_copy["comments"],
-    })
-
-    final_df.to_csv(out_path, index=False)
+    df_copy.to_csv(out_path, index=False)
     print(f"\nUpdated CSV saved to: {out_path}")
 
     total_issues = len(results)
