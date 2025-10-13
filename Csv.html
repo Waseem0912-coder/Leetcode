@@ -3,22 +3,22 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Advanced CSV Viewer</title>
+    <title>Advanced CSV Editor</title>
     <style>
         :root {
             --bg-color: #f4f7f9;
-            --main-color: #ffffff;
-            --header-color: #ffffff;
+            --sidebar-bg: #ffffff;
+            --header-bg: #f8f9fa;
+            --main-bg: #ffffff;
             --accent-color: #007aff;
             --text-color: #2c3e50;
             --border-color: #e0e6ed;
-            --shadow-color: rgba(0, 0, 0, 0.08);
-            --icon-color: #8e8e93;
+            --shadow-color: rgba(44, 62, 80, 0.1);
+            --icon-color: #5f6368;
+            --danger-color: #dc3545;
         }
 
-        *, *::before, *::after {
-            box-sizing: border-box;
-        }
+        *, *::before, *::after { box-sizing: border-box; }
 
         body {
             font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
@@ -26,111 +26,139 @@
             color: var(--text-color);
             margin: 0;
             font-size: 16px;
+            height: 100vh;
+            overflow: hidden;
         }
 
         #app-container {
-            max-width: 900px;
-            margin: 30px auto;
-            background-color: var(--main-color);
-            border-radius: 12px;
-            box-shadow: 0 10px 40px var(--shadow-color);
-            overflow: hidden;
             display: flex;
-            flex-direction: column;
-            min-height: 80vh;
+            height: 100vh;
+            width: 100vw;
         }
 
-        /* --- Header --- */
-        #app-header {
+        /* --- Sidebar --- */
+        #sidebar {
+            width: 320px;
+            background-color: var(--sidebar-bg);
+            border-right: 1px solid var(--border-color);
+            display: flex;
+            flex-direction: column;
+            flex-shrink: 0;
+        }
+
+        #sidebar-header {
+            padding: 15px;
+            border-bottom: 1px solid var(--border-color);
+        }
+
+        #search-input {
+            width: 100%;
+            padding: 10px 12px;
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            font-size: 15px;
+            outline-color: var(--accent-color);
+        }
+
+        #record-list-container {
+            flex-grow: 1;
+            overflow-y: auto;
+        }
+        
+        #record-list {
+            list-style: none;
+            padding: 0;
+            margin: 0;
+        }
+        
+        .record-item {
+            padding: 12px 15px;
+            cursor: pointer;
+            border-bottom: 1px solid var(--border-color);
+            transition: background-color 0.2s ease;
+        }
+        .record-item:hover { background-color: #f0f2f5; }
+        .record-item.active {
+            background-color: var(--accent-color);
+            color: white;
+            font-weight: 600;
+        }
+        .record-item-title {
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            font-size: 15px;
+        }
+        .record-item-subtitle {
+            font-size: 13px;
+            opacity: 0.7;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+        .record-item.active .record-item-subtitle { opacity: 0.9; }
+
+
+        /* --- Main Content --- */
+        #main-content {
+            flex-grow: 1;
+            display: flex;
+            flex-direction: column;
+            background-color: var(--bg-color);
+        }
+
+        #main-header {
             display: flex;
             justify-content: space-between;
             align-items: center;
             padding: 15px 25px;
-            background-color: var(--header-color);
+            background-color: var(--main-bg);
             border-bottom: 1px solid var(--border-color);
-            gap: 20px;
-            flex-wrap: wrap;
+            box-shadow: 0 2px 4px var(--shadow-color);
+            z-index: 10;
         }
-
-        #app-header h1 {
-            margin: 0;
-            font-size: 22px;
-            color: var(--text-color);
-        }
-
-        #file-input { display: none; }
-
-        .header-button {
+        
+        #main-header h1 { margin: 0; font-size: 22px; }
+        
+        .action-buttons { display: flex; gap: 10px; }
+        .action-btn {
             display: inline-flex;
             align-items: center;
             gap: 8px;
-            background-color: var(--accent-color);
-            color: white;
-            padding: 9px 18px;
-            border: none;
+            background-color: #fff;
+            color: var(--accent-color);
+            border: 1px solid var(--border-color);
+            padding: 8px 16px;
             border-radius: 8px;
             cursor: pointer;
             font-weight: 600;
             font-size: 15px;
-            transition: background-color 0.2s ease, transform 0.1s ease;
+            transition: all 0.2s ease;
         }
-        .header-button:hover { background-color: #0056b3; }
-        .header-button:active { transform: scale(0.98); }
-        .header-button svg { width: 18px; height: 18px; }
+        .action-btn:hover:not(:disabled) { background-color: #f0f2f5; border-color: #c8d1dc; }
+        .action-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+        .action-btn svg { width: 18px; height: 18px; }
 
-        #search-container {
-            display: flex;
-            align-items: center;
-            background: #f0f2f5;
-            border-radius: 8px;
-            padding: 0 5px 0 12px;
-        }
-
-        #search-input {
-            border: none;
-            background: transparent;
-            padding: 10px 5px;
-            font-size: 15px;
-            outline: none;
-            min-width: 200px;
-        }
-
-        #clear-search-btn {
-            background: none;
-            border: none;
-            cursor: pointer;
-            padding: 8px;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            opacity: 0.7;
-            transition: opacity 0.2s ease;
-        }
-        #clear-search-btn:hover { opacity: 1; }
-        #clear-search-btn svg { width: 16px; height: 16px; color: var(--icon-color); }
+        #upload-btn { color: white; background-color: var(--accent-color); }
+        #upload-btn:hover { background-color: #0056b3; }
+        #delete-btn { color: var(--danger-color); }
+        #delete-btn:hover:not(:disabled) { background-color: #fff5f5; border-color: var(--danger-color); }
         
-        /* --- Main Body --- */
-        #app-body {
+        #file-input { display: none; }
+        
+        #viewer-body {
             flex-grow: 1;
             padding: 25px;
-            display: flex;
-            flex-direction: column;
+            overflow-y: auto;
         }
 
         #initial-message, #no-results-message {
             text-align: center;
-            margin: auto;
+            margin-top: 20vh;
             color: #6c757d;
         }
-        #initial-message h2, #no-results-message h2 { font-weight: 500; margin-bottom: 5px; }
+        #initial-message h2, #no-results-message h2 { font-weight: 500; }
         
-        /* --- Viewer --- */
-        #viewer-container {
-            display: flex;
-            flex-direction: column;
-            flex-grow: 1;
-        }
-
         #navigation-controls {
             display: flex;
             justify-content: space-between;
@@ -139,31 +167,10 @@
             border-bottom: 1px solid var(--border-color);
             margin-bottom: 25px;
         }
-
-        #record-counter { font-size: 16px; font-weight: 600; color: #555; }
-
-        .nav-button {
-            background-color: #fff;
-            color: var(--accent-color);
-            border: 1px solid var(--border-color);
-            padding: 8px;
-            border-radius: 8px;
-            cursor: pointer;
-            font-weight: 600;
-            transition: background-color 0.2s ease, color 0.2s ease, border-color 0.2s ease;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            width: 40px;
-            height: 40px;
-        }
-        .nav-button svg { width: 24px; height: 24px; }
-        .nav-button:hover:not(:disabled) { background-color: #f0f2f5; border-color: #c8d1dc; }
-        .nav-button:disabled { opacity: 0.5; cursor: not-allowed; }
-
+        
         #record-display { display: grid; gap: 15px; }
         .data-card {
-            background-color: var(--bg-color);
+            background-color: var(--main-bg);
             border: 1px solid var(--border-color);
             border-radius: 8px;
             padding: 15px;
@@ -174,562 +181,375 @@
             color: #6c757d;
             font-weight: 600;
             text-transform: uppercase;
-            letter-spacing: 0.5px;
         }
-        .data-card pre {
+        .data-card pre, .data-card textarea {
             margin: 0;
+            width: 100%;
             white-space: pre-wrap;
             word-wrap: break-word;
             font-family: "SF Mono", "Menlo", "Consolas", monospace;
             font-size: 15px;
             line-height: 1.6;
         }
+        .data-card textarea {
+            border: 1px solid #ccc;
+            border-radius: 4px;
+            padding: 8px;
+            resize: vertical;
+            min-height: 50px;
+        }
 
         .hidden { display: none !important; }
-
-        #error-message {
-            color: #d9534f;
-            margin-top: 15px;
-            font-weight: 500;
-            text-align: center;
-        }
     </style>
 </head>
 <body>
 
     <div id="app-container">
-        <header id="app-header">
-            <h1>CSV Viewer</h1>
-            <div id="search-container">
-                <input type="search" id="search-input" placeholder="Search all fields..." disabled>
-                <button id="clear-search-btn" class="hidden">
-                    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12" /></svg>
-                </button>
+        <aside id="sidebar">
+            <div id="sidebar-header">
+                <input type="search" id="search-input" placeholder="Filter records..." disabled>
             </div>
-            <label for="file-input" class="header-button">
-                <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5m-13.5-9L12 3m0 0l4.5 4.5M12 3v13.5" /></svg>
-                Upload New File
-            </label>
-            <input type="file" id="file-input" accept=".csv, text/csv">
-        </header>
+            <div id="record-list-container">
+                <ul id="record-list"></ul>
+            </div>
+        </aside>
 
-        <main id="app-body">
-            <div id="initial-message">
-                <h2>Welcome!</h2>
-                <p>Upload a CSV file to get started.</p>
-            </div>
-            
-            <div id="no-results-message" class="hidden">
-                <h2>No Results Found</h2>
-                <p>Your search query did not match any records.</p>
-            </div>
-
-            <div id="viewer-container" class="hidden">
-                <div id="navigation-controls">
-                    <button id="prev-btn" class="nav-button" title="Previous (Left Arrow)">
-                        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M15.75 19.5L8.25 12l7.5-7.5" /></svg>
-                    </button>
-                    <span id="record-counter"></span>
-                    <button id="next-btn" class="nav-button" title="Next (Right Arrow)">
-                        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M8.25 4.5l7.5 7.5-7.5 7.5" /></svg>
-                    </button>
+        <main id="main-content">
+            <header id="main-header">
+                <h1>CSV Editor</h1>
+                <div class="action-buttons">
+                    <button id="edit-toggle-btn" class="action-btn" disabled>Edit</button>
+                    <button id="delete-btn" class="action-btn" disabled>Delete Record</button>
+                    <button id="download-btn" class="action-btn" disabled>Download CSV</button>
+                    <label for="file-input" id="upload-btn" class="action-btn">Upload File</label>
+                    <input type="file" id="file-input" accept=".csv, text/csv">
                 </div>
-                <div id="record-display"></div>
-            </div>
+            </header>
+            
+            <div id="viewer-body">
+                <div id="initial-message">
+                    <h2>Welcome to the CSV Editor</h2>
+                    <p>Upload a file to begin editing.</p>
+                </div>
+                
+                <div id="no-results-message" class="hidden">
+                    <h2>No Matching Records</h2>
+                    <p>Your filter did not match any records.</p>
+                </div>
 
-            <p id="error-message" class="hidden"></p>
+                <div id="viewer-container" class="hidden">
+                    <div id="navigation-controls">
+                        <button id="prev-btn" class="action-btn" title="Previous (Left Arrow)">&larr;</button>
+                        <span id="record-counter"></span>
+                        <button id="next-btn" class="action-btn" title="Next (Right Arrow)">&rarr;</button>
+                    </div>
+                    <div id="record-display"></div>
+                </div>
+            </div>
         </main>
     </div>
 
     <script>
-        document.addEventListener('DOMContentLoaded', () => {
-            // --- DOM Elements ---
-            const fileInput = document.getElementById('file-input');
-            const searchInput = document.getElementById('search-input');
-            const clearSearchBtn = document.getElementById('clear-search-btn');
-            
-            const initialMessage = document.getElementById('initial-message');
-            const noResultsMessage = document.getElementById('no-results-message');
-            const viewerContainer = document.getElementById('viewer-container');
-            const recordDisplay = document.getElementById('record-display');
-            const recordCounter = document.getElementById('record-counter');
-            
-            const prevBtn = document.getElementById('prev-btn');
-            const nextBtn = document.getElementById('next-btn');
-            const errorMessage = document.getElementById('error-message');
+    document.addEventListener('DOMContentLoaded', () => {
+        // --- DOM Elements ---
+        const fileInput = document.getElementById('file-input');
+        const searchInput = document.getElementById('search-input');
+        const recordList = document.getElementById('record-list');
+        
+        const initialMessage = document.getElementById('initial-message');
+        const noResultsMessage = document.getElementById('no-results-message');
+        const viewerContainer = document.getElementById('viewer-container');
+        const recordDisplay = document.getElementById('record-display');
+        const recordCounter = document.getElementById('record-counter');
+        
+        const prevBtn = document.getElementById('prev-btn');
+        const nextBtn = document.getElementById('next-btn');
+        const editToggleBtn = document.getElementById('edit-toggle-btn');
+        const deleteBtn = document.getElementById('delete-btn');
+        const downloadBtn = document.getElementById('download-btn');
 
-            // --- App State ---
-            let allRecords = [];
-            let filteredRecords = [];
-            let headers = [];
-            let currentIndex = 0;
+        // --- App State ---
+        let allRecords = [];
+        let headers = [];
+        let filteredIndices = [];
+        let currentIndexInFiltered = 0;
+        let isEditMode = false;
 
-            // --- Event Listeners ---
-            fileInput.addEventListener('change', handleFileUpload);
-            searchInput.addEventListener('input', handleSearch);
-            clearSearchBtn.addEventListener('click', clearSearch);
-            
-            prevBtn.addEventListener('click', showPreviousRecord);
-            nextBtn.addEventListener('click', showNextRecord);
-            document.addEventListener('keydown', handleKeyPress);
+        // --- Event Listeners ---
+        fileInput.addEventListener('change', handleFileUpload);
+        searchInput.addEventListener('input', handleSearch);
+        
+        prevBtn.addEventListener('click', () => navigate(-1));
+        nextBtn.addEventListener('click', () => navigate(1));
+        document.addEventListener('keydown', handleKeyPress);
 
-            // --- Functions ---
-            function handleFileUpload(event) {
-                const file = event.target.files[0];
-                if (!file) return;
+        editToggleBtn.addEventListener('click', toggleEditMode);
+        deleteBtn.addEventListener('click', deleteCurrentRecord);
+        downloadBtn.addEventListener('click', downloadCSV);
 
-                const reader = new FileReader();
-                reader.onload = (e) => {
-                    const csvText = e.target.result;
-                    try {
-                        const parsedData = parseCSV(csvText);
-                        if (!parsedData || parsedData.headers.length === 0 || parsedData.data.length === 0) {
-                            throw new Error("CSV is empty or invalid.");
-                        }
-                        
-                        headers = parsedData.headers;
-                        allRecords = parsedData.data.map(row => {
-                            const record = {};
-                            headers.forEach((header, i) => { record[header] = row[i]; });
-                            return record;
-                        });
-                        
-                        // Reset state for new file
-                        clearSearch();
-                        searchInput.disabled = false;
-                        
-                    } catch (error) {
-                        showError(error.message);
-                        console.error("CSV Parsing Error:", error);
+        // --- Core Functions ---
+        function handleFileUpload(event) {
+            const file = event.target.files[0];
+            if (!file) return;
+            const reader = new FileReader();
+            reader.onload = e => {
+                const csvText = e.target.result;
+                try {
+                    const parsedData = parseCSV(csvText);
+                    if (!parsedData || parsedData.headers.length === 0 || parsedData.data.length === 0) {
+                        throw new Error("CSV is empty or invalid.");
                     }
-                };
-                reader.onerror = () => showError("Error reading the file.");
-                reader.readAsText(file);
-            }
-
-            function handleSearch() {
-                const query = searchInput.value.toLowerCase().trim();
-                
-                clearSearchBtn.classList.toggle('hidden', !query);
-                
-                if (!query) {
-                    filteredRecords = [...allRecords];
-                } else {
-                    filteredRecords = allRecords.filter(record => {
-                        return Object.values(record).some(value => 
-                            String(value).toLowerCase().includes(query)
-                        );
+                    headers = parsedData.headers;
+                    allRecords = parsedData.data.map(row => {
+                        const record = {};
+                        headers.forEach((header, i) => { record[header] = row[i]; });
+                        return record;
                     });
+                    
+                    isEditMode = false;
+                    searchInput.value = '';
+                    updateUIForNewFile();
+                } catch (error) {
+                    alert(`Error: ${error.message}`);
+                    console.error("CSV Parsing Error:", error);
                 }
-                
-                currentIndex = 0;
-                renderCurrentRecord();
-            }
+            };
+            reader.onerror = () => alert("Error reading the file.");
+            reader.readAsText(file);
+        }
 
-            function clearSearch() {
-                searchInput.value = '';
-                clearSearchBtn.classList.add('hidden');
-                filteredRecords = [...allRecords];
-                currentIndex = 0;
-                if (allRecords.length > 0) {
-                    renderCurrentRecord();
+        function handleSearch() {
+            const query = searchInput.value.toLowerCase().trim();
+            filteredIndices = [];
+            allRecords.forEach((record, index) => {
+                const recordMatches = Object.values(record).some(value => 
+                    String(value).toLowerCase().includes(query)
+                );
+                if (recordMatches) {
+                    filteredIndices.push(index);
                 }
-            }
-
-            function renderCurrentRecord() {
-                hideAllMessages();
-
-                if (allRecords.length === 0) {
-                    initialMessage.classList.remove('hidden');
-                    return;
-                }
-
-                if (filteredRecords.length === 0) {
-                    noResultsMessage.classList.remove('hidden');
-                    viewerContainer.classList.add('hidden');
-                    return;
-                }
-                
-                viewerContainer.classList.remove('hidden');
-
-                const record = filteredRecords[currentIndex];
-                recordDisplay.innerHTML = ''; 
-
-                headers.forEach(header => {
-                    const card = document.createElement('div');
-                    card.className = 'data-card';
-                    card.innerHTML = `<h3>${header}</h3><pre>${record[header] || ''}</pre>`;
-                    recordDisplay.appendChild(card);
-                });
-
-                updateNavigation();
-            }
-
-            function updateNavigation() {
-                if (filteredRecords.length === 0) {
-                    recordCounter.textContent = 'No records';
-                    prevBtn.disabled = true;
-                    nextBtn.disabled = true;
-                    return;
-                }
-                recordCounter.textContent = `Record ${currentIndex + 1} of ${filteredRecords.length}`;
-                prevBtn.disabled = currentIndex === 0;
-                nextBtn.disabled = currentIndex === filteredRecords.length - 1;
-            }
-
-            function showPreviousRecord() {
-                if (currentIndex > 0) {
-                    currentIndex--;
-                    renderCurrentRecord();
-                }
-            }
-
-            function showNextRecord() {
-                if (currentIndex < filteredRecords.length - 1) {
-                    currentIndex++;
-                    renderCurrentRecord();
-                }
-            }
-
-            function handleKeyPress(e) {
-                if (viewerContainer.classList.contains('hidden') || document.activeElement === searchInput) return;
-                if (e.key === 'ArrowLeft') showPreviousRecord();
-                if (e.key === 'ArrowRight') showNextRecord();
-            }
+            });
             
-            function hideAllMessages() {
-                initialMessage.classList.add('hidden');
+            currentIndexInFiltered = 0;
+            renderSidebar();
+            renderMainContent();
+        }
+
+        // --- Rendering ---
+        function updateUIForNewFile() {
+            filteredIndices = allRecords.map((_, i) => i);
+            currentIndexInFiltered = 0;
+            
+            searchInput.disabled = false;
+            editToggleBtn.disabled = false;
+            deleteBtn.disabled = false;
+            downloadBtn.disabled = false;
+            
+            renderSidebar();
+            renderMainContent();
+        }
+
+        function renderSidebar() {
+            recordList.innerHTML = '';
+            if (filteredIndices.length === 0) return;
+
+            filteredIndices.forEach((originalIndex, filteredIndex) => {
+                const record = allRecords[originalIndex];
+                const li = document.createElement('li');
+                li.className = 'record-item';
+                if (filteredIndex === currentIndexInFiltered) {
+                    li.classList.add('active');
+                }
+                li.dataset.filteredIndex = filteredIndex;
+
+                const title = String(record[headers[0]] || `Record ${originalIndex + 1}`).trim();
+                const subtitle = headers.length > 1 ? String(record[headers[1]] || '').trim() : '';
+
+                li.innerHTML = `
+                    <div class="record-item-title">${title || '(empty)'}</div>
+                    <div class="record-item-subtitle">${subtitle}</div>
+                `;
+                li.addEventListener('click', () => {
+                    currentIndexInFiltered = filteredIndex;
+                    renderMainContent();
+                    renderSidebar(); // to update active state
+                });
+                recordList.appendChild(li);
+            });
+        }
+        
+        function renderMainContent() {
+            initialMessage.classList.add('hidden');
+            if (allRecords.length === 0) {
                 viewerContainer.classList.add('hidden');
                 noResultsMessage.classList.add('hidden');
-                errorMessage.classList.add('hidden');
+                initialMessage.classList.remove('hidden');
+                return;
             }
 
-            function showError(message) {
-                hideAllMessages();
-                errorMessage.textContent = `Error: ${message}`;
-                errorMessage.classList.remove('hidden');
-            }
-
-            function parseCSV(csvText) {
-                const rows = [];
-                let currentField = '';
-                let currentRow = [];
-                let inQuotedField = false;
-                csvText = csvText.trim().replace(/\r\n/g, '\n').replace(/\r/g, '\n');
-
-                for (let i = 0; i < csvText.length; i++) {
-                    const char = csvText[i];
-                    const nextChar = csvText[i + 1];
-
-                    if (inQuotedField) {
-                        if (char === '"' && nextChar === '"') {
-                            currentField += '"';
-                            i++;
-                        } else if (char === '"') {
-                            inQuotedField = false;
-                        } else {
-                            currentField += char;
-                        }
-                    } else {
-                        if (char === '"') {
-                            inQuotedField = true;
-                        } else if (char === ',') {
-                            currentRow.push(currentField);
-                            currentField = '';
-                        } else if (char === '\n') {
-                            currentRow.push(currentField);
-                            rows.push(currentRow);
-                            currentRow = [];
-                            currentField = '';
-                        } else {
-                            currentField += char;
-                        }
-                    }
-                }
-                currentRow.push(currentField);
-                rows.push(currentRow);
-
-                const headers = rows.shift() || [];
-                const data = rows.filter(row => row.length === headers.length && row.some(field => field.trim() !== ''));
-                return { headers, data };
-            }
-        });
-    </script>
-</body>
-</html>            background-color: #fff;
-            color: var(--accent-color);
-            border: 1px solid var(--accent-color);
-            padding: 8px 16px;
-            border-radius: 6px;
-            cursor: pointer;
-            font-weight: 600;
-            transition: background-color 0.2s ease, color 0.2s ease;
-        }
-
-        .nav-button:hover:not(:disabled) {
-            background-color: var(--accent-color);
-            color: white;
-        }
-        
-        .nav-button:disabled {
-            opacity: 0.5;
-            cursor: not-allowed;
-        }
-
-        #record-display {
-            display: grid;
-            gap: 15px;
-        }
-
-        .data-card {
-            background-color: var(--header-bg);
-            border: 1px solid var(--border-color);
-            border-radius: 8px;
-            padding: 15px;
-        }
-
-        .data-card h3 {
-            margin: 0 0 10px 0;
-            font-size: 14px;
-            color: #555;
-            text-transform: uppercase;
-            letter-spacing: 0.5px;
-        }
-
-        .data-card pre {
-            margin: 0;
-            white-space: pre-wrap; /* Crucial for multiline text */
-            word-wrap: break-word;
-            font-family: "Menlo", "Consolas", monospace;
-            font-size: 15px;
-            line-height: 1.6;
-            background: #fff;
-            padding: 10px;
-            border-radius: 4px;
-            border: 1px solid #ddd;
-        }
-
-        .hidden {
-            display: none !important;
-        }
-        
-        #error-message {
-            color: #d9534f;
-            margin-top: 15px;
-            font-weight: 500;
-        }
-
-    </style>
-</head>
-<body>
-
-    <div id="app-container">
-        <!-- Initial Upload View -->
-        <div id="upload-container">
-            <h1>CSV Data Viewer</h1>
-            <p>Select a CSV file to begin viewing its records one by one.</p>
-            <label for="file-input" class="custom-file-upload">
-                Upload CSV File
-            </label>
-            <input type="file" id="file-input" accept=".csv, text/csv">
-            <p id="error-message" class="hidden"></p>
-        </div>
-
-        <!-- Data Viewer View (hidden initially) -->
-        <div id="viewer-container" class="hidden">
-            <div id="navigation-controls">
-                <button id="prev-btn" class="nav-button">&larr; Previous</button>
-                <span id="record-counter"></span>
-                <button id="next-btn" class="nav-button">Next &rarr;</button>
-            </div>
-            <div id="record-display">
-                <!-- Data cards will be injected here by JavaScript -->
-            </div>
-        </div>
-    </div>
-
-    <script>
-        document.addEventListener('DOMContentLoaded', () => {
-            // --- DOM Elements ---
-            const fileInput = document.getElementById('file-input');
-            const uploadContainer = document.getElementById('upload-container');
-            const viewerContainer = document.getElementById('viewer-container');
-            const recordDisplay = document.getElementById('record-display');
-            const recordCounter = document.getElementById('record-counter');
-            const prevBtn = document.getElementById('prev-btn');
-            const nextBtn = document.getElementById('next-btn');
-            const errorMessage = document.getElementById('error-message');
-
-            // --- App State ---
-            let records = [];
-            let headers = [];
-            let currentIndex = 0;
-
-            // --- Event Listeners ---
-            fileInput.addEventListener('change', handleFileUpload);
-            prevBtn.addEventListener('click', showPreviousRecord);
-            nextBtn.addEventListener('click', showNextRecord);
-            document.addEventListener('keydown', handleKeyPress);
-
-            // --- Functions ---
-            function handleFileUpload(event) {
-                const file = event.target.files[0];
-                if (!file) return;
-
-                const reader = new FileReader();
-                reader.onload = (e) => {
-                    const csvText = e.target.result;
-                    try {
-                        const parsedData = parseCSV(csvText);
-                        if (!parsedData || parsedData.headers.length === 0 || parsedData.data.length === 0) {
-                            throw new Error("CSV is empty or invalid.");
-                        }
-                        
-                        headers = parsedData.headers;
-                        // Map array data to objects for easier access
-                        records = parsedData.data.map(row => {
-                            const record = {};
-                            headers.forEach((header, i) => {
-                                record[header] = row[i];
-                            });
-                            return record;
-                        });
-                        
-                        currentIndex = 0;
-                        renderCurrentRecord();
-                        uploadContainer.classList.add('hidden');
-                        viewerContainer.classList.remove('hidden');
-                        errorMessage.classList.add('hidden');
-
-                    } catch (error) {
-                        showError(error.message);
-                        console.error("CSV Parsing Error:", error);
-                    }
-                };
-                reader.onerror = () => {
-                    showError("Error reading the file.");
-                }
-                reader.readAsText(file);
-            }
-
-            function renderCurrentRecord() {
-                if (records.length === 0) return;
-
-                const record = records[currentIndex];
-                recordDisplay.innerHTML = ''; // Clear previous record
-
-                headers.forEach(header => {
-                    const card = document.createElement('div');
-                    card.className = 'data-card';
-
-                    const title = document.createElement('h3');
-                    title.textContent = header;
-
-                    const content = document.createElement('pre');
-                    content.textContent = record[header] || ''; // Handle empty fields
-
-                    card.appendChild(title);
-                    card.appendChild(content);
-                    recordDisplay.appendChild(card);
-                });
-
-                updateNavigation();
-            }
-
-            function updateNavigation() {
-                recordCounter.textContent = `Record ${currentIndex + 1} of ${records.length}`;
-                prevBtn.disabled = currentIndex === 0;
-                nextBtn.disabled = currentIndex === records.length - 1;
-            }
-
-            function showPreviousRecord() {
-                if (currentIndex > 0) {
-                    currentIndex--;
-                    renderCurrentRecord();
-                }
-            }
-
-            function showNextRecord() {
-                if (currentIndex < records.length - 1) {
-                    currentIndex++;
-                    renderCurrentRecord();
-                }
-            }
-
-            function handleKeyPress(e) {
-                // Only navigate if the viewer is active
-                if (viewerContainer.classList.contains('hidden')) return;
-
-                if (e.key === 'ArrowLeft') {
-                    showPreviousRecord();
-                } else if (e.key === 'ArrowRight') {
-                    showNextRecord();
-                }
+            if (filteredIndices.length === 0) {
+                viewerContainer.classList.add('hidden');
+                noResultsMessage.classList.remove('hidden');
+                return;
             }
             
-            function showError(message) {
-                errorMessage.textContent = `Error: ${message}`;
-                errorMessage.classList.remove('hidden');
+            noResultsMessage.classList.add('hidden');
+            viewerContainer.classList.remove('hidden');
+            
+            const originalIndex = filteredIndices[currentIndexInFiltered];
+            const record = allRecords[originalIndex];
+            recordDisplay.innerHTML = ''; 
+
+            headers.forEach(header => {
+                const card = document.createElement('div');
+                card.className = 'data-card';
+                const value = record[header] || '';
+                
+                let contentHTML;
+                if (isEditMode) {
+                    contentHTML = `<textarea data-header="${header}" oninput="this.style.height='auto';this.style.height=this.scrollHeight+'px';">${value}</textarea>`;
+                } else {
+                    contentHTML = `<pre>${value}</pre>`;
+                }
+                card.innerHTML = `<h3>${header}</h3>${contentHTML}`;
+                recordDisplay.appendChild(card);
+            });
+            
+            if (isEditMode) {
+                recordDisplay.querySelectorAll('textarea').forEach(textarea => {
+                    textarea.style.height = 'auto';
+                    textarea.style.height = textarea.scrollHeight + 'px';
+                    textarea.addEventListener('input', (e) => {
+                        const header = e.target.dataset.header;
+                        allRecords[originalIndex][header] = e.target.value;
+                    });
+                });
             }
 
-            /**
-             * A robust CSV parser that handles quoted fields, newlines, and escaped quotes.
-             * @param {string} csvText The raw CSV string.
-             * @returns {{headers: string[], data: string[][]}} An object with headers and data rows.
-             */
-            function parseCSV(csvText) {
-                const rows = [];
-                let currentField = '';
-                let currentRow = [];
-                let inQuotedField = false;
+            updateNavigation();
+        }
+        
+        function updateNavigation() {
+            const count = filteredIndices.length;
+            recordCounter.textContent = count > 0 ? `Record ${currentIndexInFiltered + 1} of ${count}` : 'No records';
+            prevBtn.disabled = currentIndexInFiltered === 0;
+            nextBtn.disabled = currentIndexInFiltered >= count - 1;
+        }
 
-                // Normalize line endings
-                csvText = csvText.trim().replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+        // --- Actions ---
+        function navigate(direction) {
+            const newIndex = currentIndexInFiltered + direction;
+            if (newIndex >= 0 && newIndex < filteredIndices.length) {
+                currentIndexInFiltered = newIndex;
+                renderMainContent();
+                renderSidebar();
+                document.querySelector('.record-item.active')?.scrollIntoView({ block: 'nearest' });
+            }
+        }
+        
+        function handleKeyPress(e) {
+            if (document.activeElement.tagName === 'TEXTAREA' || document.activeElement === searchInput) return;
+            if (e.key === 'ArrowLeft') navigate(-1);
+            if (e.key === 'ArrowRight') navigate(1);
+        }
 
-                for (let i = 0; i < csvText.length; i++) {
-                    const char = csvText[i];
-                    const nextChar = csvText[i + 1];
+        function toggleEditMode() {
+            isEditMode = !isEditMode;
+            editToggleBtn.textContent = isEditMode ? 'Save' : 'Edit';
+            
+            if (!isEditMode) {
+                // When saving, re-render sidebar to reflect potential changes
+                renderSidebar();
+            }
+            renderMainContent();
+        }
+        
+        function deleteCurrentRecord() {
+            if (filteredIndices.length === 0) return;
+            if (!confirm('Are you sure you want to delete this record? This action cannot be undone.')) return;
+            
+            const originalIndexToDelete = filteredIndices[currentIndexInFiltered];
+            allRecords.splice(originalIndexToDelete, 1);
+            
+            // Re-run search to get updated indices
+            handleSearch();
+            
+            // Adjust current index to not be out of bounds
+            if (currentIndexInFiltered >= filteredIndices.length) {
+                currentIndexInFiltered = Math.max(0, filteredIndices.length - 1);
+            }
+            
+            renderSidebar();
+            renderMainContent();
+        }
 
-                    if (inQuotedField) {
-                        if (char === '"' && nextChar === '"') {
-                            // Escaped quote
-                            currentField += '"';
-                            i++; // Skip the next quote
-                        } else if (char === '"') {
-                            // End of quoted field
-                            inQuotedField = false;
-                        } else {
-                            currentField += char;
-                        }
+        function downloadCSV() {
+            const csvContent = convertToCSV(allRecords, headers);
+            const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+            const link = document.createElement('a');
+            const url = URL.createObjectURL(blob);
+            link.setAttribute('href', url);
+            link.setAttribute('download', 'edited_data.csv');
+            link.style.visibility = 'hidden';
+            document.body.appendChild(link);
+            link.click();
+            document.body.removeChild(link);
+        }
+
+        // --- Utility Functions ---
+        function convertToCSV(data, headers) {
+            const escapeField = (field) => {
+                const str = String(field);
+                if (str.includes(',') || str.includes('"') || str.includes('\n')) {
+                    return `"${str.replace(/"/g, '""')}"`;
+                }
+                return str;
+            };
+            const headerRow = headers.map(escapeField).join(',');
+            const rows = data.map(record => 
+                headers.map(header => escapeField(record[header])).join(',')
+            );
+            return [headerRow, ...rows].join('\n');
+        }
+
+        function parseCSV(csvText) {
+            const rows = [];
+            let currentField = '';
+            let currentRow = [];
+            let inQuotedField = false;
+            csvText = csvText.trim().replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+
+            for (let i = 0; i < csvText.length; i++) {
+                const char = csvText[i];
+                const nextChar = csvText[i + 1];
+
+                if (inQuotedField) {
+                    if (char === '"' && nextChar === '"') {
+                        currentField += '"'; i++;
+                    } else if (char === '"') {
+                        inQuotedField = false;
                     } else {
-                        if (char === '"') {
-                            inQuotedField = true;
-                        } else if (char === ',') {
-                            currentRow.push(currentField);
-                            currentField = '';
-                        } else if (char === '\n') {
-                            currentRow.push(currentField);
-                            rows.push(currentRow);
-                            currentRow = [];
-                            currentField = '';
-                        } else {
-                            currentField += char;
-                        }
+                        currentField += char;
+                    }
+                } else {
+                    if (char === '"') {
+                        inQuotedField = true;
+                    } else if (char === ',') {
+                        currentRow.push(currentField); currentField = '';
+                    } else if (char === '\n') {
+                        currentRow.push(currentField); rows.push(currentRow); currentRow = []; currentField = '';
+                    } else {
+                        currentField += char;
                     }
                 }
-
-                // Add the last field and row
-                currentRow.push(currentField);
-                rows.push(currentRow);
-
-                // Separate header from data
-                const headers = rows.shift() || [];
-                // Filter out any potential empty rows at the end
-                const data = rows.filter(row => row.length === headers.length && row.some(field => field.trim() !== ''));
-
-                return { headers, data };
             }
-        });
+            currentRow.push(currentField); rows.push(currentRow);
+
+            const headers = rows.shift() || [];
+            const data = rows.filter(row => row.length === headers.length && row.some(field => field.trim() !== ''));
+            return { headers, data };
+        }
+    });
     </script>
 </body>
 </html>
