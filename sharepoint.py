@@ -1,417 +1,751 @@
-import argparse
-import re
-import sys
-import time
-from datetime import datetime
-from pathlib import Path
-from typing import Any, Dict, List
-
+import pandas as pd
 from selenium import webdriver
-from selenium.webdriver.chrome.options import Options as ChromeOptions
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
-from selenium.common.exceptions import TimeoutException, WebDriverException
+from selenium.webdriver.chrome.options import Options
+import time
+import os
 
-import pandas as pd
+def setup_driver():
+    """Setup Chrome driver with options"""
+    chrome_options = Options()
+    # Uncomment the next line if you want to run in headless mode
+    # chrome_options.add_argument("--headless")
+    chrome_options.add_argument("--no-sandbox")
+    chrome_options.add_argument("--disable-dev-shm-usage")
 
-
-DEFAULT_URL = "https://issuetracker.google.com/issues/446543771"
-
-
-def build_driver(headless: bool) -> webdriver.Chrome:
-    opts = ChromeOptions()
-    if headless:
-        # Modern headless mode
-        opts.add_argument("--headless=new")
-    # Sensible defaults for CI/headless environments
-    opts.add_argument("--disable-gpu")
-    opts.add_argument("--no-sandbox")
-    opts.add_argument("--disable-dev-shm-usage")
-    opts.add_argument("--window-size=1400,1000")
-    opts.add_experimental_option("excludeSwitches", ["enable-automation"])  # reduce automation banner
-    opts.add_experimental_option("useAutomationExtension", False)
-    try:
-        driver = webdriver.Chrome(options=opts)
-    except WebDriverException as e:
-        print("Failed to start Chrome WebDriver. Ensure Chrome is installed.", file=sys.stderr)
-        raise e
+    # Initialize the driver
+    driver = webdriver.Chrome(options=chrome_options)
     return driver
 
+def wait_for_login(driver, base_url):
+    """Wait for user to login by checking for a specific element that indicates login is complete"""
+    print("Please log in to the system...")
+    driver.get(base_url)
 
-def wait_for_page_ready(driver: webdriver.Chrome, wait_time: int) -> None:
-    WebDriverWait(driver, wait_time).until(
-        lambda d: d.execute_script("return document.readyState") == "complete"
-    )
-    # Give Angular/JS a brief moment to render dynamic content
-    time.sleep(1.0)
+    # Wait for a specific element that indicates login is complete
+    try:
+        # Try different common elements that appear after login
+        WebDriverWait(driver, 60).until(
+            EC.presence_of_element_located((By.TAG_NAME, "main")) or
+            EC.presence_of_element_located((By.CLASS_NAME, "builds")) or
+            EC.presence_of_element_located((By.CSS_SELECTOR, "build-list"))
+        )
+        print("Login detected. Proceeding with automation.")
+        return True
+    except:
+        print("Timeout waiting for login. Please check the system.")
+        return False
+
+def wait_for_user_input():
+    """Wait for user to press Enter before continuing"""
+    input("Press Enter after logging in to start processing...")
+
+def search_builds(driver, base_url, fingerprint):
+    """Search for a build by fingerprint using URL parameter"""
+    # Construct URL with fingerprint parameter
+    search_url = f"{base_url}{fingerprint}"
+
+    # Navigate to the search URL
+    driver.get(search_url)
+
+    # Wait for results to load
+    try:
+        WebDriverWait(driver, 10).until(
+            EC.presence_of_element_located((By.CSS_SELECTOR, "mat-table"))
+        )
+        return True
+    except Exception as e:
+        print(f"Error waiting for search results: {e}")
+        return False
+
+def extract_build_links(driver):
+    """Extract build links from the search results table"""
+    build_links = []
+    try:
+        # Wait for the table to load
+        WebDriverWait(driver, 10).until(
+            EC.presence_of_element_located((By.CSS_SELECTOR, "mat-table"))
+        )
+
+        # Give extra time for dynamic content to render
+        time.sleep(2)
+
+        # Find all rows in the table
+        rows = driver.find_elements(By.CSS_SELECTOR, "mat-row")
+        print(f"Found {len(rows)} rows in the table")
+
+        for idx, row in enumerate(rows):
+            try:
+                # Try multiple strategies to find the link
+                link = None
+                
+                # Strategy 1: Find link in fingerprint column
+                try:
+                    fingerprint_cell = row.find_element(By.CSS_SELECTOR, "mat-cell[cdk-column-fingerprint]")
+                    anchor = fingerprint_cell.find_element(By.TAG_NAME, "a")
+                    link = anchor.get_attribute("href")
+                    print(f"Row {idx+1}: Found link via fingerprint column: {link}")
+                except:
+                    pass
+                
+                # Strategy 2: Find any anchor with linkableButton class in the row
+                if not link:
+                    try:
+                        anchor = row.find_element(By.CSS_SELECTOR, "a.linkableButton")
+                        link = anchor.get_attribute("href")
+                        print(f"Row {idx+1}: Found link via linkableButton class: {link}")
+                    except:
+                        pass
+                
+                # Strategy 3: Find any clickable anchor in the row
+                if not link:
+                    try:
+                        anchors = row.find_elements(By.TAG_NAME, "a")
+                        for anchor in anchors:
+                            href = anchor.get_attribute("href")
+                            if href and "builds/" in href:
+                                link = href
+                                print(f"Row {idx+1}: Found link via generic anchor search: {link}")
+                                break
+                    except:
+                        pass
+                
+                # Strategy 4: Click the row and capture URL change
+                if not link:
+                    try:
+                        current_url = driver.current_url
+                        row.click()
+                        time.sleep(1)
+                        new_url = driver.current_url
+                        if new_url != current_url and "builds/" in new_url:
+                            link = new_url
+                            print(f"Row {idx+1}: Found link via row click: {link}")
+                            # Navigate back to search results
+                            driver.back()
+                            time.sleep(2)
+                    except:
+                        pass
+                
+                if link:
+                    build_links.append(link)
+                else:
+                    print(f"Row {idx+1}: No link found")
+                    # Debug: Print row HTML
+                    print(f"Row HTML snippet: {row.get_attribute('innerHTML')[:200]}...")
+
+            except Exception as e:
+                print(f"Error processing row {idx+1}: {e}")
+                continue
+
+    except Exception as e:
+        print(f"Error extracting build links: {e}")
+        import traceback
+        traceback.print_exc()
+
+    print(f"Total links extracted: {len(build_links)}")
+    return build_links
 
 
-def try_click_more_like_buttons(driver: webdriver.Chrome) -> None:
-    # Click any obvious expanders to reveal comments/content
-    labels = [
-        "Show more",
-        "View more",
-        "View all",
-        "Expand",
-        "See more",
-        "More",
-        "View all updates",
-    ]
-    for label in labels:
+def navigate_with_retry(driver, url, max_retries=3, retry_delay=3):
+    """Navigate to URL with retry logic for network errors"""
+    for attempt in range(max_retries):
         try:
-            elems = driver.find_elements(By.XPATH, f"//button[normalize-space()='{label}'] | //span[normalize-space()='{label}']/ancestor::button")
-            for el in elems:
-                if el.is_displayed() and el.is_enabled():
-                    el.click()
-                    time.sleep(0.25)
-        except Exception:
+            driver.get(url)
+            # Wait a moment to ensure page starts loading
+            time.sleep(1)
+            
+            # Check if we got a network error page
+            page_source = driver.page_source.lower()
+            if "err_name_not_resolved" in page_source or "err_connection" in page_source:
+                raise Exception("Network error detected in page")
+            
+            return True
+        except Exception as e:
+            print(f"  Navigation attempt {attempt + 1}/{max_retries} failed: {e}")
+            if attempt < max_retries - 1:
+                print(f"  Retrying in {retry_delay} seconds...")
+                time.sleep(retry_delay)
+            else:
+                print(f"  Failed to navigate after {max_retries} attempts")
+                return False
+    return False
+
+def get_approved_by(driver):
+    """Extract 'Approved By' information from the build detail page"""
+    try:
+        # Wait for metadata section to load
+        WebDriverWait(driver, 10).until(
+            EC.presence_of_element_located((By.TAG_NAME, "build-metadata"))
+        )
+
+        # Find the build metadata section
+        metadata_section = driver.find_element(By.TAG_NAME, "build-metadata")
+
+        # Look for 'Approved By' label and extract its value
+        labels = metadata_section.find_elements(By.TAG_NAME, "label")
+        for label in labels:
+            if "Approved By" in label.text:
+                # Find the corresponding output element
+                parent_row = label.find_element(By.XPATH, "./parent::ape-labeled-row")
+                output_element = parent_row.find_element(By.TAG_NAME, "output")
+                approved_by = output_element.text.strip()
+                return approved_by
+
+        return "Not Found"
+    except Exception as e:
+        print(f"Error getting approved by: {e}")
+        return "Error"
+
+def classify_approval_type(approved_by):
+    """Classify the approval type based on who approved"""
+    if approved_by == "APFE":
+        return "Auto"
+    elif approved_by == "android-partner-prodops@system.gserviceaccount.com":
+        return "Bot"
+    elif approved_by in ["Not Found", "Error", "No Builds Found", "Navigation Error"]:
+        return approved_by
+    else:
+        return "Human"
+
+def process_csv_data(driver, base_url, csv_file):
+    """Process all fingerprints from CSV file"""
+    # Read the CSV file
+    df = pd.read_csv(csv_file)
+
+    # Limit to first 5 rows for testing
+    df = df[:5]
+
+    # Create lists to store results
+    all_results = []
+    multi_search_results = []
+
+    print(f"Processing {len(df)} fingerprints from {csv_file}")
+
+    for index, row in df.iterrows():
+        fingerprint = row['Fingerprint']
+        print(f"\n{'='*60}")
+        print(f"Processing fingerprint {index + 1}/{len(df)}: {fingerprint}")
+        print(f"{'='*60}")
+
+        # Search for the build using URL parameter
+        if not search_builds(driver, base_url, fingerprint):
             continue
 
+        # Extract links from results page
+        build_links = extract_build_links(driver)
 
-def auto_scroll(driver: webdriver.Chrome, max_rounds: int = 20) -> None:
-    last_height = driver.execute_script("return document.body.scrollHeight || document.documentElement.scrollHeight")
-    for _ in range(max_rounds):
-        driver.execute_script("window.scrollTo(0, document.body.scrollHeight)")
-        time.sleep(0.6)
-        new_height = driver.execute_script("return document.body.scrollHeight || document.documentElement.scrollHeight")
-        if not new_height or new_height == last_height:
-            break
-        last_height = new_height
+        if len(build_links) == 0:
+            print(f"No builds found for fingerprint: {fingerprint}")
+            approved_by = "No Builds Found"
+            approval_type = classify_approval_type(approved_by)
+            all_results.append({
+                'Fingerprint': fingerprint,
+                'Build Link': '',
+                'Approved By': approved_by,
+                'Approval Type': approval_type
+            })
+            continue
 
+        # Handle multiple build links
+        if len(build_links) > 1:
+            print(f"Found {len(build_links)} builds for fingerprint: {fingerprint}")
+            for i, link in enumerate(build_links):
+                print(f"  Build {i+1}: {link}")
 
-def extract_comments_dom(driver: webdriver.Chrome) -> List[Dict[str, Any]]:
-    # Run a single JS snippet to gather best-effort comment data from various page structures.
-    script = r"""
-const results = [];
+                # Navigate to detail page with retry
+                if not navigate_with_retry(driver, link):
+                    print(f"  Skipping build {i+1} due to navigation failure")
+                    multi_search_results.append({
+                        'Fingerprint': fingerprint,
+                        'Build Link': link,
+                        'Approved By': 'Navigation Error',
+                        'Approval Type': 'Navigation Error'
+                    })
+                    continue
 
-// Helper: get visible innerText trimmed
-const text = (el) => (el && el.innerText ? el.innerText.trim() : "");
+                # Wait for page to load
+                time.sleep(2)
 
-// Helper: find closest container that looks like a comment block
-const closestCommentContainer = (start) => {
-  if (!start) return null;
-  let el = start;
-  const seen = new Set();
-  const isCommentLike = (node) => {
-    if (!node || !node.tagName) return false;
-    const tag = node.tagName.toLowerCase();
-    if (["issue-comment", "activity-comment", "comment"].includes(tag)) return true;
-    const cls = (node.getAttribute("class") || "").toLowerCase();
-    // Only consider nodes with explicit comment markers; avoid generic activity items
-    return /\bcomment\b/.test(cls) || /\bbv2-comment\b/.test(cls);
-  };
-  while (el && !isCommentLike(el) && !seen.has(el)) {
-    seen.add(el);
-    el = el.parentElement;
-  }
-  return el || start;
-};
+                # Get approved by info
+                approved_by = get_approved_by(driver)
+                approval_type = classify_approval_type(approved_by)
 
-// Strategy A: anchors/elements with id like commentN
-const anchors = Array.from(document.querySelectorAll('[id^="comment"], a[href^="#comment"], [data-comment-id]'))
-  .filter(n => {
-    const id = (n.id || "") + "";
-    if (/^comment\d+$/.test(id)) return true;
-    if (n.getAttribute && n.getAttribute('data-comment-id')) return true;
-    const href = (n.getAttribute && n.getAttribute('href')) ? n.getAttribute('href') : "";
-    return /^#comment\d+$/.test(href);
-  });
+                multi_search_results.append({
+                    'Fingerprint': fingerprint,
+                    'Build Link': link,
+                    'Approved By': approved_by,
+                    'Approval Type': approval_type
+                })
+        else:
+            # Single build case - navigate to detail page
+            link = build_links[0]
+            print(f"Single build found: {link}")
 
-// Strategy B: generic comment-like containers
-const commentLike = Array.from(document.querySelectorAll('issue-comment, .bv2-comment, .comment, [class*="comment" i]'));
-
-const candidates = new Set([...anchors.map(a => closestCommentContainer(a)), ...commentLike]);
-
-let idx = 0;
-for (const node of candidates) {
-  if (!node) continue;
-  // Try to determine comment id/number
-  let cid = node.getAttribute('id') || '';
-  let cnum = '';
-  if (/^comment\d+$/.test(cid)) {
-    cnum = '#' + cid.replace('comment','');
-  } else {
-    const a = node.querySelector('[id^="comment"], a[href^="#comment"]');
-    if (a) {
-      const aid = a.id || '';
-      if (/^comment\d+$/.test(aid)) {
-        cid = aid;
-        cnum = '#' + aid.replace('comment','');
-      } else {
-        const href = a.getAttribute('href') || '';
-        const m = href.match(/#comment(\d+)/);
-        if (m) { cid = 'comment' + m[1]; cnum = '#' + m[1]; }
-      }
-    }
-  }
-  if (!cid) cid = 'comment' + (++idx);
-  if (!cnum) cnum = '#' + (idx);
-
-  // User/author
-  let user = '';
-  let userEmail = '';
-  const userCand = node.querySelector('[class*="author" i], [class*="user" i], .bv2-comment-author, a[href*="profiles.google.com"], a[href^="mailto:"]');
-  if (userCand) {
-    user = text(userCand);
-    if (userCand.getAttribute) {
-      const href = userCand.getAttribute('href') || '';
-      if (href.startsWith('mailto:')) {
-        userEmail = href.replace(/^mailto:/, '').trim();
-      }
-    }
-  }
-  if (!user) {
-    // Try to find something that looks like an email near the top of the comment
-    const emailMatch = (text(node) || '').match(/[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}/);
-    if (emailMatch) {
-      user = emailMatch[0];
-      userEmail = emailMatch[0];
-    }
-  }
-
-  // Datetime
-  let dt = '';
-  let dtFull = '';
-  const timeEl = node.querySelector('time, [title*=":" i], [class*="time" i], [class*="date" i]');
-  if (timeEl) {
-    dt = text(timeEl) || (timeEl.getAttribute('aria-label') || '');
-    dtFull = timeEl.getAttribute('title') || dt;
-  }
-
-  // Content
-  let content = '';
-  const contentEl = node.querySelector('.comment-content, .bv2-comment-content, [class*="content" i]');
-  if (contentEl) {
-    content = text(contentEl);
-  } else {
-    // Fallback: text minus header-like bits
-    content = text(node);
-  }
-
-  // Trim long whitespace
-  const squash = s => (s || '').replace(/\s+$/g, '').replace(/^\s+/g, '').replace(/\s{2,}/g, ' ').trim();
-
-  results.push({
-    comment_id: cid,
-    comment_number: cnum,
-    user: squash(user),
-    user_email: squash(userEmail),
-    datetime: squash(dt),
-    datetime_full: squash(dtFull),
-    content: (content || '').trim()
-  });
-}
-
-// Deduplicate by comment_id while preserving order
-const seen = new Set();
-const deduped = [];
-for (const r of results) {
-  if (r.comment_id && !seen.has(r.comment_id)) { seen.add(r.comment_id); deduped.push(r); }
-}
-return deduped;
-"""
-
-    try:
-        items = driver.execute_script(script)
-        if not isinstance(items, list):
-            return []
-        # Basic normalization
-        normalized = []
-        for it in items:
-            if not isinstance(it, dict):
+            # Navigate to detail page with retry
+            if not navigate_with_retry(driver, link):
+                print(f"  Skipping due to navigation failure")
+                all_results.append({
+                    'Fingerprint': fingerprint,
+                    'Build Link': link,
+                    'Approved By': 'Navigation Error',
+                    'Approval Type': 'Navigation Error'
+                })
                 continue
-            c = {
-                "comment_id": str(it.get("comment_id", "")).strip(),
-                "comment_number": str(it.get("comment_number", "")).strip(),
-                "user": str(it.get("user", "")).strip(),
-                "user_email": str(it.get("user_email", "")).strip(),
-                "datetime": str(it.get("datetime", "")).strip(),
-                "datetime_full": str(it.get("datetime_full", "")).strip(),
-                "content": str(it.get("content", "")).strip(),
-            }
-            normalized.append(c)
-        return normalized
-    except Exception:
-        return []
 
+            # Wait for page to load
+            time.sleep(2)
 
-def infer_issue_id(url: str) -> str:
-    m = re.search(r"/issues/(\d+)", url)
-    return m.group(1) if m else "issue"
+            # Get approved by info
+            approved_by = get_approved_by(driver)
+            approval_type = classify_approval_type(approved_by)
 
+            all_results.append({
+                'Fingerprint': fingerprint,
+                'Build Link': link,
+                'Approved By': approved_by,
+                'Approval Type': approval_type
+            })
+
+    return all_results, multi_search_results
 
 def main():
-    parser = argparse.ArgumentParser(description="Extract comments from Google Issue Tracker using Selenium")
-    parser.add_argument("--url", default=DEFAULT_URL, help="Issue URL (default: %(default)s)")
-    parser.add_argument("--output", default=None, help="Output CSV filename (default: auto)")
-    parser.add_argument("--headless", action="store_true", help="Run Chrome headless")
-    parser.add_argument("--include-empty", action="store_true", help="Include empty/deleted placeholder comments")
-    parser.add_argument("--wait-time", type=int, default=12, help="Max wait time for elements (default: %(default)s)")
+    # Base URL from requirements
+    base_url = "https://partner.android.com/approvals/builds?a=8010&q="
 
-    args = parser.parse_args()
-    url = args.url
-    issue_id = infer_issue_id(url)
+    # Hardcoded CSV file path
+    csv_file = "SearchData.csv"
 
-    print(f"Starting extraction from {url}...")
-    driver = build_driver(headless=args.headless)
+    # Setup driver
+    driver = setup_driver()
+
     try:
-        print(f"Loading URL: {url}")
-        driver.get(url)
-        wait_for_page_ready(driver, args.wait_time)
+        # Wait for user to log in
+        if not wait_for_login(driver, base_url):
+            print("Failed to detect login. Exiting.")
+            return
 
-        # Try to ensure comments are present on screen
-        try_click_more_like_buttons(driver)
-        auto_scroll(driver)
+        # Wait for user input before starting processing
+        wait_for_user_input()
 
-        # If there is a tab/filter that hides comments, try to click an updates/comments tab by label
-        for tab_label in ("All updates", "Comments", "Updates"):
-            try:
-                tab = WebDriverWait(driver, 2).until(
-                    EC.element_to_be_clickable((By.XPATH, f"//*[normalize-space()='{tab_label}']"))
-                )
-                tab.click()
-                time.sleep(0.4)
-            except Exception:
-                pass
+        # Process CSV data
+        if not os.path.exists(csv_file):
+            print(f"{csv_file} file not found. Please create a CSV with Fingerprint column.")
+            return
 
-        # Extract
-        comments_all = extract_comments_dom(driver)
+        all_results, multi_search_results = process_csv_data(driver, base_url, csv_file)
 
-        # Filter out empty placeholders unless explicitly requested
-        def _is_empty(c: Dict[str, Any]) -> bool:
-            content = (c.get("content") or "").strip()
-            if not content:
-                return True
-            # Treat known deletion messages as empty
-            lowered = content.lower()
-            deletion_markers = [
-                "comment deleted",
-                "this comment has been deleted",
-                "deleted comment",
-                "no content",
-                "empty update",
-            ]
-            if any(m in lowered for m in deletion_markers):
-                return True
+        # Save results to CSV files
+        if all_results:
+            df_all = pd.DataFrame(all_results)
+            df_all.to_csv("results.csv", index=False)
+            print(f"\nSaved {len(all_results)} results to results.csv")
+            
+            # Print summary of approval types
+            print("\n" + "="*60)
+            print("APPROVAL TYPE SUMMARY")
+            print("="*60)
+            approval_counts = df_all['Approval Type'].value_counts()
+            for approval_type, count in approval_counts.items():
+                print(f"{approval_type}: {count}")
+            print("="*60)
 
-            # If there is no user and no datetime, likely a placeholder
-            if not (c.get("user") or "").strip() and not (c.get("datetime") or "").strip():
-                return True
+        if multi_search_results:
+            df_multi = pd.DataFrame(multi_search_results)
+            df_multi.to_csv("multi_search_results.csv", index=False)
+            print(f"\nSaved {len(multi_search_results)} multi-search results to multi_search_results.csv")
+            
+            # Print summary for multi-search results too
+            print("\n" + "="*60)
+            print("MULTI-SEARCH APPROVAL TYPE SUMMARY")
+            print("="*60)
+            approval_counts_multi = df_multi['Approval Type'].value_counts()
+            for approval_type, count in approval_counts_multi.items():
+                print(f"{approval_type}: {count}")
+            print("="*60)
 
-            # Ignore comments that just repeat an anchor label (e.g., "#8") or generic word "Comment"
-            if re.fullmatch(r"#[0-9]+", content):
-                return True
-            if content.lower() in {"comment", "comments"}:
-                return True
-
-            return False
-
-        if args.include_empty:
-            comments = comments_all
-        else:
-            comments = [c for c in comments_all if not _is_empty(c)]
-
-        print(f"Found {len(comments)} comments", end="")
-        if len(comments_all) != len(comments):
-            print(f" ({len(comments_all)} including empty placeholders)")
-        else:
-            print()
-
-        # Pretty print in console
-        if comments:
-            print("\n================================================================================")
-            print("EXTRACTED COMMENTS")
-            print("================================================================================\n")
-            for i, c in enumerate(comments, 1):
-                print(f"--- Comment {i} ---")
-                print(f"Comment Number: {c.get('comment_number','')}")
-                print(f"Comment ID: {c.get('comment_id','')}")
-                print(f"User: {c.get('user','')}")
-                if c.get("user_email"):
-                    print(f"User Email: {c.get('user_email')}")
-                print(f"Date/Time: {c.get('datetime','')}")
-                if c.get("datetime_full") and c.get("datetime_full") != c.get("datetime"):
-                    print(f"Full Date/Time: {c.get('datetime_full')}")
-                content_preview = (c.get("content") or "").splitlines()
-                joined = " ".join(line.strip() for line in content_preview)
-                print(f"Content Preview: {joined[:200]}")
-                print("-" * 80 + "\n")
-
-        # Save to DataFrame (CSV)
-        if args.output:
-            out_path = Path(args.output)
-            if out_path.suffix == "":
-                out_path = out_path.with_suffix(".csv")
-        else:
-            ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-            out_path = Path(f"comments_{issue_id}_{ts}.csv")
-
-        # Prepare description (comment #1) and arrange output rows
-        description_comment = None
-        for record in comments_all:
-            number = (record.get("comment_number") or "").strip().lstrip("#")
-            if number == "1":
-                description_comment = record
-                break
-        if not description_comment and comments:
-            description_comment = comments[0]
-        description_text = ""
-        if description_comment:
-            description_text = description_comment.get("content", "")
-
-        comment_entries: List[str] = []
-        for c in comments:
-            number = (c.get("comment_number") or "").strip().lstrip("#")
-            if description_comment and number == "1":
-                continue  # skip comment #1 in comments column
-            comment_text = c.get("content", "")
-            comment_number = c.get("comment_number", "")
-            if comment_number:
-                label = comment_number
-            else:
-                label = f"#{number}" if number else ""
-            comment_body = comment_text.strip()
-            entry_parts: List[str] = []
-            if label:
-                entry_parts.append(f"Comment{label}")
-            else:
-                entry_parts.append("Comment")
-            if comment_body:
-                entry_parts.append(comment_body)
-            entry = "\n".join(entry_parts)
-            comment_entries.append(f"\n\n{entry}" if entry else "")
-
-        comments_combined = "".join(entry for entry in comment_entries if entry).lstrip()
-
-        row = {
-            "issue_id": issue_id,
-            "description": description_text,
-            "comments": comments_combined,
-        }
-
-        df = pd.DataFrame([row], columns=["issue_id", "description", "comments"])
-
-        out_path.parent.mkdir(parents=True, exist_ok=True)
-        df.to_csv(out_path, index=False)
-        print(f"Saved dataframe with {len(df)} rows to {out_path}")
-        if description_comment:
-            print("Description captured from comment #1.")
-        else:
-            print("No comment #1 found; description column left blank.")
-
-    except TimeoutException:
-        print("Timed out waiting for page to load. Try increasing --wait-time or disable --headless to log in.", file=sys.stderr)
-        sys.exit(1)
-    except WebDriverException as e:
-        print(f"WebDriver error: {e}", file=sys.stderr)
-        sys.exit(1)
+    except Exception as e:
+        print(f"An error occurred: {e}")
+        import traceback
+        traceback.print_exc()
     finally:
-        try:
-            driver.quit()
-        except Exception:
-            pass
+        driver.quit()
 
+if __name__ == "__main__":
+    main()import pandas as pd
+from selenium import webdriver
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
+from selenium.webdriver.chrome.options import Options
+import time
+import os
+
+def setup_driver():
+    """Setup Chrome driver with options"""
+    chrome_options = Options()
+    # Uncomment the next line if you want to run in headless mode
+    # chrome_options.add_argument("--headless")
+    chrome_options.add_argument("--no-sandbox")
+    chrome_options.add_argument("--disable-dev-shm-usage")
+
+    # Initialize the driver
+    driver = webdriver.Chrome(options=chrome_options)
+    return driver
+
+def wait_for_login(driver, base_url):
+    """Wait for user to login by checking for a specific element that indicates login is complete"""
+    print("Please log in to the system...")
+    driver.get(base_url)
+
+    # Wait for a specific element that indicates login is complete
+    try:
+        # Try different common elements that appear after login
+        WebDriverWait(driver, 60).until(
+            EC.presence_of_element_located((By.TAG_NAME, "main")) or
+            EC.presence_of_element_located((By.CLASS_NAME, "builds")) or
+            EC.presence_of_element_located((By.CSS_SELECTOR, "build-list"))
+        )
+        print("Login detected. Proceeding with automation.")
+        return True
+    except:
+        print("Timeout waiting for login. Please check the system.")
+        return False
+
+def wait_for_user_input():
+    """Wait for user to press Enter before continuing"""
+    input("Press Enter after logging in to start processing...")
+
+def search_builds(driver, base_url, fingerprint):
+    """Search for a build by fingerprint using URL parameter"""
+    # Construct URL with fingerprint parameter
+    search_url = f"{base_url}{fingerprint}"
+
+    # Navigate to the search URL
+    driver.get(search_url)
+
+    # Wait for results to load
+    try:
+        WebDriverWait(driver, 10).until(
+            EC.presence_of_element_located((By.CSS_SELECTOR, "mat-table"))
+        )
+        return True
+    except Exception as e:
+        print(f"Error waiting for search results: {e}")
+        return False
+
+def extract_build_links(driver):
+    """Extract build links from the search results table"""
+    build_links = []
+    try:
+        # Wait for the table to load
+        WebDriverWait(driver, 10).until(
+            EC.presence_of_element_located((By.CSS_SELECTOR, "mat-table"))
+        )
+
+        # Give extra time for dynamic content to render
+        time.sleep(2)
+
+        # Find all rows in the table
+        rows = driver.find_elements(By.CSS_SELECTOR, "mat-row")
+        print(f"Found {len(rows)} rows in the table")
+
+        for idx, row in enumerate(rows):
+            try:
+                # Try multiple strategies to find the link
+                link = None
+                
+                # Strategy 1: Find link in fingerprint column
+                try:
+                    fingerprint_cell = row.find_element(By.CSS_SELECTOR, "mat-cell[cdk-column-fingerprint]")
+                    anchor = fingerprint_cell.find_element(By.TAG_NAME, "a")
+                    link = anchor.get_attribute("href")
+                    print(f"Row {idx+1}: Found link via fingerprint column: {link}")
+                except:
+                    pass
+                
+                # Strategy 2: Find any anchor with linkableButton class in the row
+                if not link:
+                    try:
+                        anchor = row.find_element(By.CSS_SELECTOR, "a.linkableButton")
+                        link = anchor.get_attribute("href")
+                        print(f"Row {idx+1}: Found link via linkableButton class: {link}")
+                    except:
+                        pass
+                
+                # Strategy 3: Find any clickable anchor in the row
+                if not link:
+                    try:
+                        anchors = row.find_elements(By.TAG_NAME, "a")
+                        for anchor in anchors:
+                            href = anchor.get_attribute("href")
+                            if href and "builds/" in href:
+                                link = href
+                                print(f"Row {idx+1}: Found link via generic anchor search: {link}")
+                                break
+                    except:
+                        pass
+                
+                # Strategy 4: Click the row and capture URL change
+                if not link:
+                    try:
+                        current_url = driver.current_url
+                        row.click()
+                        time.sleep(1)
+                        new_url = driver.current_url
+                        if new_url != current_url and "builds/" in new_url:
+                            link = new_url
+                            print(f"Row {idx+1}: Found link via row click: {link}")
+                            # Navigate back to search results
+                            driver.back()
+                            time.sleep(2)
+                    except:
+                        pass
+                
+                if link:
+                    build_links.append(link)
+                else:
+                    print(f"Row {idx+1}: No link found")
+                    # Debug: Print row HTML
+                    print(f"Row HTML snippet: {row.get_attribute('innerHTML')[:200]}...")
+
+            except Exception as e:
+                print(f"Error processing row {idx+1}: {e}")
+                continue
+
+    except Exception as e:
+        print(f"Error extracting build links: {e}")
+        import traceback
+        traceback.print_exc()
+
+    print(f"Total links extracted: {len(build_links)}")
+    return build_links
+
+
+def navigate_with_retry(driver, url, max_retries=3, retry_delay=3):
+    """Navigate to URL with retry logic for network errors"""
+    for attempt in range(max_retries):
+        try:
+            driver.get(url)
+            # Wait a moment to ensure page starts loading
+            time.sleep(1)
+            
+            # Check if we got a network error page
+            page_source = driver.page_source.lower()
+            if "err_name_not_resolved" in page_source or "err_connection" in page_source:
+                raise Exception("Network error detected in page")
+            
+            return True
+        except Exception as e:
+            print(f"  Navigation attempt {attempt + 1}/{max_retries} failed: {e}")
+            if attempt < max_retries - 1:
+                print(f"  Retrying in {retry_delay} seconds...")
+                time.sleep(retry_delay)
+            else:
+                print(f"  Failed to navigate after {max_retries} attempts")
+                return False
+    return False
+
+def get_approved_by(driver):
+    """Extract 'Approved By' information from the build detail page"""
+    try:
+        # Wait for metadata section to load
+        WebDriverWait(driver, 10).until(
+            EC.presence_of_element_located((By.TAG_NAME, "build-metadata"))
+        )
+
+        # Find the build metadata section
+        metadata_section = driver.find_element(By.TAG_NAME, "build-metadata")
+
+        # Look for 'Approved By' label and extract its value
+        labels = metadata_section.find_elements(By.TAG_NAME, "label")
+        for label in labels:
+            if "Approved By" in label.text:
+                # Find the corresponding output element
+                parent_row = label.find_element(By.XPATH, "./parent::ape-labeled-row")
+                output_element = parent_row.find_element(By.TAG_NAME, "output")
+                approved_by = output_element.text.strip()
+                return approved_by
+
+        return "Not Found"
+    except Exception as e:
+        print(f"Error getting approved by: {e}")
+        return "Error"
+
+def classify_approval_type(approved_by):
+    """Classify the approval type based on who approved"""
+    if approved_by == "APFE":
+        return "Auto"
+    elif approved_by == "android-partner-prodops@system.gserviceaccount.com":
+        return "Bot"
+    elif approved_by in ["Not Found", "Error", "No Builds Found", "Navigation Error"]:
+        return approved_by
+    else:
+        return "Human"
+
+def process_csv_data(driver, base_url, csv_file):
+    """Process all fingerprints from CSV file"""
+    # Read the CSV file
+    df = pd.read_csv(csv_file)
+
+    # Limit to first 5 rows for testing
+    df = df[:5]
+
+    # Create lists to store results
+    all_results = []
+    multi_search_results = []
+
+    print(f"Processing {len(df)} fingerprints from {csv_file}")
+
+    for index, row in df.iterrows():
+        fingerprint = row['Fingerprint']
+        print(f"\n{'='*60}")
+        print(f"Processing fingerprint {index + 1}/{len(df)}: {fingerprint}")
+        print(f"{'='*60}")
+
+        # Search for the build using URL parameter
+        if not search_builds(driver, base_url, fingerprint):
+            continue
+
+        # Extract links from results page
+        build_links = extract_build_links(driver)
+
+        if len(build_links) == 0:
+            print(f"No builds found for fingerprint: {fingerprint}")
+            approved_by = "No Builds Found"
+            approval_type = classify_approval_type(approved_by)
+            all_results.append({
+                'Fingerprint': fingerprint,
+                'Build Link': '',
+                'Approved By': approved_by,
+                'Approval Type': approval_type
+            })
+            continue
+
+        # Handle multiple build links
+        if len(build_links) > 1:
+            print(f"Found {len(build_links)} builds for fingerprint: {fingerprint}")
+            for i, link in enumerate(build_links):
+                print(f"  Build {i+1}: {link}")
+
+                # Navigate to detail page with retry
+                if not navigate_with_retry(driver, link):
+                    print(f"  Skipping build {i+1} due to navigation failure")
+                    multi_search_results.append({
+                        'Fingerprint': fingerprint,
+                        'Build Link': link,
+                        'Approved By': 'Navigation Error',
+                        'Approval Type': 'Navigation Error'
+                    })
+                    continue
+
+                # Wait for page to load
+                time.sleep(2)
+
+                # Get approved by info
+                approved_by = get_approved_by(driver)
+                approval_type = classify_approval_type(approved_by)
+
+                multi_search_results.append({
+                    'Fingerprint': fingerprint,
+                    'Build Link': link,
+                    'Approved By': approved_by,
+                    'Approval Type': approval_type
+                })
+        else:
+            # Single build case - navigate to detail page
+            link = build_links[0]
+            print(f"Single build found: {link}")
+
+            # Navigate to detail page with retry
+            if not navigate_with_retry(driver, link):
+                print(f"  Skipping due to navigation failure")
+                all_results.append({
+                    'Fingerprint': fingerprint,
+                    'Build Link': link,
+                    'Approved By': 'Navigation Error',
+                    'Approval Type': 'Navigation Error'
+                })
+                continue
+
+            # Wait for page to load
+            time.sleep(2)
+
+            # Get approved by info
+            approved_by = get_approved_by(driver)
+            approval_type = classify_approval_type(approved_by)
+
+            all_results.append({
+                'Fingerprint': fingerprint,
+                'Build Link': link,
+                'Approved By': approved_by,
+                'Approval Type': approval_type
+            })
+
+    return all_results, multi_search_results
+
+def main():
+    # Base URL from requirements
+    base_url = "https://partner.android.com/approvals/builds?a=8010&q="
+
+    # Hardcoded CSV file path
+    csv_file = "SearchData.csv"
+
+    # Setup driver
+    driver = setup_driver()
+
+    try:
+        # Wait for user to log in
+        if not wait_for_login(driver, base_url):
+            print("Failed to detect login. Exiting.")
+            return
+
+        # Wait for user input before starting processing
+        wait_for_user_input()
+
+        # Process CSV data
+        if not os.path.exists(csv_file):
+            print(f"{csv_file} file not found. Please create a CSV with Fingerprint column.")
+            return
+
+        all_results, multi_search_results = process_csv_data(driver, base_url, csv_file)
+
+        # Save results to CSV files
+        if all_results:
+            df_all = pd.DataFrame(all_results)
+            df_all.to_csv("results.csv", index=False)
+            print(f"\nSaved {len(all_results)} results to results.csv")
+            
+            # Print summary of approval types
+            print("\n" + "="*60)
+            print("APPROVAL TYPE SUMMARY")
+            print("="*60)
+            approval_counts = df_all['Approval Type'].value_counts()
+            for approval_type, count in approval_counts.items():
+                print(f"{approval_type}: {count}")
+            print("="*60)
+
+        if multi_search_results:
+            df_multi = pd.DataFrame(multi_search_results)
+            df_multi.to_csv("multi_search_results.csv", index=False)
+            print(f"\nSaved {len(multi_search_results)} multi-search results to multi_search_results.csv")
+            
+            # Print summary for multi-search results too
+            print("\n" + "="*60)
+            print("MULTI-SEARCH APPROVAL TYPE SUMMARY")
+            print("="*60)
+            approval_counts_multi = df_multi['Approval Type'].value_counts()
+            for approval_type, count in approval_counts_multi.items():
+                print(f"{approval_type}: {count}")
+            print("="*60)
+
+    except Exception as e:
+        print(f"An error occurred: {e}")
+        import traceback
+        traceback.print_exc()
+    finally:
+        driver.quit()
 
 if __name__ == "__main__":
     main()
