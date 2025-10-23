@@ -200,23 +200,80 @@ def get_approved_by(page):
     try:
         # Wait for metadata section to load
         page.wait_for_selector("build-metadata", timeout=10000)
+        random_delay(1, 2)
         
-        # Find all labels
-        labels = page.query_selector_all("build-metadata label")
+        # Strategy 1: Find by traversing from label to output
+        try:
+            labels = page.query_selector_all("build-metadata label")
+            for label in labels:
+                label_text = label.text_content()
+                if "Approved By" in label_text:
+                    # Get the parent ape-labeled-row
+                    parent_row = label.evaluate("element => element.closest('ape-labeled-row')")
+                    # Find output element within this row
+                    output = page.evaluate("""
+                        (element) => {
+                            const row = element.closest('ape-labeled-row');
+                            const output = row ? row.querySelector('output') : null;
+                            return output ? output.textContent : null;
+                        }
+                    """, label)
+                    if output:
+                        approved_by = output.strip()
+                        print(f"  Found 'Approved By' (Strategy 1): {approved_by}")
+                        return approved_by
+        except Exception as e:
+            print(f"  Strategy 1 failed: {e}")
         
-        for label in labels:
-            if "Approved By" in label.text_content():
-                # Find the parent row and then the output element
-                parent_row = label.evaluate("element => element.closest('ape-labeled-row')")
-                if parent_row:
-                    output = page.query_selector("ape-labeled-row output")
+        # Strategy 2: Direct XPath approach
+        try:
+            approved_by = page.evaluate("""
+                () => {
+                    const labels = document.querySelectorAll('build-metadata label');
+                    for (const label of labels) {
+                        if (label.textContent.includes('Approved By')) {
+                            const row = label.closest('ape-labeled-row');
+                            if (row) {
+                                const output = row.querySelector('output');
+                                if (output) {
+                                    return output.textContent.trim();
+                                }
+                            }
+                        }
+                    }
+                    return null;
+                }
+            """)
+            if approved_by:
+                print(f"  Found 'Approved By' (Strategy 2): {approved_by}")
+                return approved_by
+        except Exception as e:
+            print(f"  Strategy 2 failed: {e}")
+        
+        # Strategy 3: Find all ape-labeled-row elements and search
+        try:
+            rows = page.query_selector_all("ape-labeled-row")
+            for row in rows:
+                label = row.query_selector("label")
+                if label and "Approved By" in label.text_content():
+                    output = row.query_selector("output")
                     if output:
                         approved_by = output.text_content().strip()
+                        print(f"  Found 'Approved By' (Strategy 3): {approved_by}")
                         return approved_by
+        except Exception as e:
+            print(f"  Strategy 3 failed: {e}")
+        
+        # Debug: Print the metadata section HTML
+        print("  Could not find 'Approved By'. Printing metadata HTML for debugging:")
+        metadata_html = page.eval_on_selector("build-metadata", "el => el.innerHTML")
+        print(f"  Metadata HTML snippet: {metadata_html[:500]}...")
         
         return "Not Found"
     except Exception as e:
-        print(f"Error getting approved by: {e}")
+        print(f"  Error getting approved by: {e}")
+        import traceback
+        traceback.print_exc()
         return "Error"
 
 def classify_approval_type(approved_by):
