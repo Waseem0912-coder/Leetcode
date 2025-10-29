@@ -1,455 +1,287 @@
+import sys
 import pandas as pd
-from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeoutError
 import time
+from datetime import datetime
+import re
+import argparse
+import json
+import subprocess
+
+# Gemini setup
+if "google.colab" in sys.modules:
+    from google.colab import auth
+    auth.authenticate_user()
+
 import os
-import random
 
-def setup_browser(playwright):
-    """Setup browser with anti-detection measures"""
-    browser = playwright.chromium.launch(
-        headless=False,  # Set to True if you want headless mode
-        args=[
-            '--no-sandbox',
-            '--disable-blink-features=AutomationControlled',
-            '--disable-dev-shm-usage',
-        ]
-    )
-    
-    # Create context with realistic browser fingerprint
-    context = browser.new_context(
-        viewport={'width': 1920, 'height': 1080},
-        user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        locale='en-US',
-        timezone_id='America/New_York',
-    )
-    
-    # Add extra headers to look more human
-    context.set_extra_http_headers({
-        'Accept-Language': 'en-US,en;q=0.9',
-        'Accept-Encoding': 'gzip, deflate, br',
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
-        'Sec-Fetch-Site': 'none',
-        'Sec-Fetch-Mode': 'navigate',
-        'Sec-Fetch-User': '?1',
-        'Sec-Fetch-Dest': 'document',
-    })
-    
-    page = context.new_page()
-    
-    # Inject script to remove webdriver property
-    page.add_init_script("""
-        Object.defineProperty(navigator, 'webdriver', {
-            get: () => undefined
-        });
-    """)
-    
-    return browser, context, page
+PROJECT_ID = "gen-lang-test1"
+LOCATION = "global"
+MODEL_ID = "gemini-2.0-flash-exp"  # or your preferred Gemini model
+API_HOST = "aiplatform.googleapis.com"
 
-def random_delay(min_seconds=2, max_seconds=5):
-    """Add random delay to mimic human behavior"""
-    delay = random.uniform(min_seconds, max_seconds)
-    time.sleep(delay)
-
-def wait_for_login(page, base_url):
-    """Wait for user to login"""
-    print("Please log in to the system...")
-    page.goto(base_url)
-    
+def get_access_token():
+    """Get Google Cloud access token"""
     try:
-        # Wait for a specific element that indicates login is complete
-        page.wait_for_selector("main, .builds, build-list", timeout=60000)
-        print("Login detected. Proceeding with automation.")
-        return True
-    except:
-        print("Timeout waiting for login. Please check the system.")
-        return False
-
-def wait_for_user_input():
-    """Wait for user to press Enter before continuing"""
-    input("Press Enter after logging in to start processing...")
-
-def search_builds(page, base_url, fingerprint):
-    """Search for a build by fingerprint using URL parameter"""
-    search_url = f"{base_url}{fingerprint}"
-    
-    try:
-        page.goto(search_url, wait_until="domcontentloaded", timeout=30000)
-        random_delay(1, 2)
-        
-        # Wait for results to load
-        page.wait_for_selector("mat-table", timeout=10000)
-        return True
+        result = subprocess.run(
+            ['gcloud', 'auth', 'print-access-token'],
+            capture_output=True,
+            text=True,
+            check=True
+        )
+        return result.stdout.strip()
     except Exception as e:
-        print(f"Error searching for build: {e}")
-        return False
+        print(f"Error getting access token: {e}")
+        return None
 
-def extract_build_links(page):
-    """Extract build links from the search results table"""
-    build_links = []
+def gemini_generate_snapshot(row):
+    """Generate a snapshot using Gemini API"""
+    prompt = f"""
+Original Issue Data:
+ISSUE DETAILS:
+Priority: {row['PRIORITY'] if pd.notna(row['PRIORITY']) else 'Missing'}
+Type: {row['TYPE'] if pd.notna(row['TYPE']) else 'Missing'}
+Title: {row['TITLE'] if pd.notna(row['TITLE']) else 'Missing'}
+Assignee: {row['ASSIGNEE'] if pd.notna(row['ASSIGNEE']) else 'Missing'}
+Status: {row['STATUS'] if pd.notna(row['STATUS']) else 'Missing'}
+Issue ID: {row['ISSUE_ID'] if pd.notna(row['ISSUE_ID']) else 'Missing'}
+Modified Time: {row['MODIFIED_TIME (UTC)'] if pd.notna(row['MODIFIED_TIME (UTC)']) else 'Missing'}
+DESCRIPTION:
+{row['description'] if pd.notna(row['description']) else 'No description provided'}
+COMMENTS:
+{row['comments'] if pd.notna(row['comments']) else 'No comments provided'}
+Category Labels:
+Framework, Dex, Apps, Hardware, Settings, Smart Switch, Keyboard, Connectivity, Camera, Others, Notification, UX/SystemUI, SUW, Home/Launcher, Work Profile
+Sub-Category Labels (technology-focused, no vendor names):
+Performance, Compatibility, Data Transfer, Input Methods, WiFi, Bluetooth, NFC, Mobile Data, Battery, Display, Audio, Sensors, Camera Functionality, Biometrics, User Preferences, Accessibility, Privacy, Account Management, Backup/Restore, Virtual Keyboard, Physical Keyboard, Text Prediction, Keyboard Layout, Photo Quality, Video Recording, Camera Modes, App Management, App Updates, App Crashes, App Permissions, System Settings, Navigation, Themes, Widgets, Setup Process, Device Registration, Home Screen, App Drawer, Icons, Gestures, App Switching, Corporate Profile, Security Policies, Work/Personal Separation, MDM Integration, Desktop Experience, Window Management, Dual Mode, Touch Response, Animations, Status Bar, Notification Panel, Notification Sounds, Do Not Disturb, Initial Configuration, Account Setup, Migration, Cross-platform Sync, Transfer Speed, Hotspot, AirDrop, Network Stability, Camera Hardware, Pre-installed Apps, Third-party Apps, App Store, System APIs, Memory Management, Boot Process, System Stability, User Interface, Miscellaneous, Unknown, Uncategorized, General Issues, Push Notifications
+Chain of Thought Instructions:
+1. Category Extraction:
+- CRITICAL: Extract the exact text from the PRIORITY field in ISSUE DETAILS. This is a mandatory requirement.
+- The PRIORITY field value is: {row['PRIORITY'] if pd.notna(row['PRIORITY']) else '[Missing]'}
+- You MUST use this exact value in your output as "Priority [Exact PRIORITY Value]"
+- If PRIORITY field is missing: Output "[Missing]"
+- Assign a single most relevant Category Label from the provided list by analyzing the core issue domain in DESCRIPTION and COMMENTS
+- Assign one or multiple relevant Sub-Category Labels that describe specific aspects of the issue (technology-focused, no vendor names)
+- Select only the most relevant labels that directly relate to the issue content
+- Output format: "Priority [Value from Priority field or "[Missing]"] Category: [Category Label] [Space-separated list of relevant Sub-Category Labels]"
+- IMPORTANT: Do not include "Sub-Category Labels:" in the output, just list the labels directly after the Category Label
+- CORRECT EXAMPLE: "Priority P2 Category: Connectivity Bluetooth Network Stability"
+- INCORRECT EXAMPLE: "Priority P2 Category: Connectivity Sub-Category Labels: Bluetooth Network Stability"
+- CORRECT FORMAT:
+Priority P2 Category: Connectivity Bluetooth Network Stability
+Highlights:
+  • Issue: [Issue description] Status: [Status]
+  • Problem: [Problem description]
+  • Final Action: [Final action description]
+2. Highlights Construction:
+- Issue: Extract from TITLE or DESCRIPTION
+- Status: Use the exact text from the STATUS field in ISSUE DETAILS (e.g., "Open", "Fixed", "In Progress", "Won't Fix", "Missing" if unclear)
+- Problem Description: Root cause from DESCRIPTION/COMMENTS (executive view)
+- Final Action: From COMMENTS/DESCRIPTION (concise explanation of resolution actions, clearly identifying whether Google or Samsung took the action and what was done)
+3. Formatting Requirements:
+- Format output exactly as specified below with no additional sections or content
+- Ensure no duplication of content between sections
+- Each bullet point in the Highlights section must be on its own line
+- The Highlights section must contain exactly three bullet points in this order:
+  1. Issue and Status on the same line
+  2. Problem on its own line
+  3. Final Action on its own line
+- The "Highlights:" section header must be on its own line, not combined with the Category line
+- Use the exact format specified to prevent structural issues
+4. Structure Output:
+- Priority [Value from Priority field or "[Missing]"] Category: [Category Label] [Space-separated list of relevant Sub-Category Labels]
+- Highlights:
+  • Issue: [value] Status: [value] (Use the exact text from the STATUS field in ISSUE DETAILS, e.g., "Open", "Fixed", "In Progress", "Won't Fix", "Missing" if unclear)
+  • Problem: [value]
+  • Final Action: [value] (Concise explanation of resolution actions, clearly identifying whether Google or Samsung took the action and what was done)
+5. Important Rules:
+- Strictly use only input field data (no inferences)
+- Use "[Missing]" for undefined values
+- Output exactly two sections in this precise order:
+  1. Category section (exactly one line)
+  2. Highlights section (exactly three lines)
+- Do not duplicate content
+- Follow the exact format specified to prevent structural issues
+"""
     
     try:
-        # Wait for table to be present
-        page.wait_for_selector("mat-table", timeout=10000)
-        random_delay(1, 2)
+        import requests
         
-        # Get all rows
-        rows = page.query_selector_all("mat-row")
-        print(f"Found {len(rows)} rows in the table")
+        access_token = get_access_token()
+        if not access_token:
+            return "Error: Could not get access token"
         
-        for idx, row in enumerate(rows):
-            link = None
-            
-            # Strategy 1: Find link in fingerprint column
-            try:
-                fingerprint_cell = row.query_selector("mat-cell[cdk-column-fingerprint]")
-                if fingerprint_cell:
-                    anchor = fingerprint_cell.query_selector("a")
-                    if anchor:
-                        link = anchor.get_attribute("href")
-                        if link:
-                            print(f"Row {idx+1}: Found link via fingerprint column")
-            except:
-                pass
-            
-            # Strategy 2: Find any anchor with linkableButton class
-            if not link:
-                try:
-                    anchor = row.query_selector("a.linkableButton")
-                    if anchor:
-                        link = anchor.get_attribute("href")
-                        if link:
-                            print(f"Row {idx+1}: Found link via linkableButton class")
-                except:
-                    pass
-            
-            # Strategy 3: Find any clickable anchor in the row
-            if not link:
-                try:
-                    anchors = row.query_selector_all("a")
-                    for anchor in anchors:
-                        href = anchor.get_attribute("href")
-                        if href and "builds/" in href:
-                            link = href
-                            print(f"Row {idx+1}: Found link via generic anchor search")
-                            break
-                except:
-                    pass
-            
-            if link:
-                # Make sure it's a full URL
-                if not link.startswith("http"):
-                    base = page.url.split("/approvals")[0]
-                    link = base + link if link.startswith("/") else base + "/" + link
-                build_links.append(link)
-            else:
-                print(f"Row {idx+1}: No link found")
+        api_endpoint = f"https://{API_HOST}/v1/projects/{PROJECT_ID}/locations/{LOCATION}/publishers/google/models/{MODEL_ID}:generateContent"
+        
+        headers = {
+            "Authorization": f"Bearer {access_token}",
+            "Content-Type": "application/json"
+        }
+        
+        payload = {
+            "contents": {
+                "role": "USER",
+                "parts": {"text": prompt}
+            },
+            "generationConfig": {
+                "temperature": 0.2,
+                "topP": 0.3,
+                "maxOutputTokens": 2500
+            }
+        }
+        
+        response = requests.post(api_endpoint, headers=headers, json=payload)
+        response.raise_for_status()
+        
+        result = response.json()
+        full_response = result['candidates'][0]['content']['parts'][0]['text'].strip()
+        
+        # Clean up response (remove think tags if present)
+        pattern = r"<think>.*?</think>"
+        cleaned_response = re.sub(pattern, "", full_response, flags=re.DOTALL)
+        
+        return cleaned_response.strip()
         
     except Exception as e:
-        print(f"Error extracting build links: {e}")
-    
-    print(f"Total links extracted: {len(build_links)}")
-    return build_links
+        print(f"Error processing issue {row['ISSUE_ID']}: {e}")
+        return f"Error generating snapshot: {str(e)}"
 
-def navigate_with_retry(page, url, max_retries=3, retry_delay=10):
-    """Navigate to URL with retry logic and anti-blocking measures"""
-    for attempt in range(max_retries):
-        try:
-            print(f"  Navigating to: {url}")
-            
-            # Add random delay before navigation to avoid detection
-            if attempt > 0:
-                random_delay(retry_delay, retry_delay + 3)
-            
-            page.goto(url, wait_until="domcontentloaded", timeout=30000)
-            
-            # Wait a bit for page to fully load
-            random_delay(2, 3)
-            
-            # Check for error pages
-            content = page.content().lower()
-            current_url = page.url.lower()
-            
-            if any(error in content for error in ["err_name_not_resolved", "err_connection", "err_internet_disconnected", "err_network_changed"]):
-                raise Exception("Network error page detected")
-            
-            if "chrome-error://" in current_url or "data:text/html,chromewebdata" in current_url:
-                raise Exception("Chrome error page detected")
-            
-            # Check if we can find the expected content
-            try:
-                page.wait_for_selector("build-metadata, body", timeout=5000)
-                print(f"  ✅ Navigation successful")
-                return True
-            except:
-                raise Exception("Expected content not found")
-                
-        except Exception as e:
-            print(f"  ❌ Navigation attempt {attempt + 1}/{max_retries} failed: {str(e)[:100]}")
-            if attempt < max_retries - 1:
-                wait_time = retry_delay + (attempt * 5)  # Increase wait time with each retry
-                print(f"  ⏳ Waiting {wait_time} seconds before retry (possible rate limiting)...")
-                time.sleep(wait_time)
-            else:
-                print(f"  ❌ Failed to navigate after {max_retries} attempts")
-                return False
-    
-    return False
-
-def get_approved_by(page):
-    """Extract 'Approved By' information from the build detail page"""
+def ollama_generate_snapshot(row):
+    """Generate a snapshot for a single issue with the specified format"""
+    prompt = f"""
+Original Issue Data:
+ISSUE DETAILS:
+Priority: {row['PRIORITY'] if pd.notna(row['PRIORITY']) else 'Missing'}
+Type: {row['TYPE'] if pd.notna(row['TYPE']) else 'Missing'}
+Title: {row['TITLE'] if pd.notna(row['TITLE']) else 'Missing'}
+Assignee: {row['ASSIGNEE'] if pd.notna(row['ASSIGNEE']) else 'Missing'}
+Status: {row['STATUS'] if pd.notna(row['STATUS']) else 'Missing'}
+Issue ID: {row['ISSUE_ID'] if pd.notna(row['ISSUE_ID']) else 'Missing'}
+Modified Time: {row['MODIFIED_TIME (UTC)'] if pd.notna(row['MODIFIED_TIME (UTC)']) else 'Missing'}
+DESCRIPTION:
+{row['description'] if pd.notna(row['description']) else 'No description provided'}
+COMMENTS:
+{row['comments'] if pd.notna(row['comments']) else 'No comments provided'}
+Category Labels:
+Framework, Dex, Apps, Hardware, Settings, Smart Switch, Keyboard, Connectivity, Camera, Others, Notification, UX/SystemUI, SUW, Home/Launcher, Work Profile
+Sub-Category Labels (technology-focused, no vendor names):
+Performance, Compatibility, Data Transfer, Input Methods, WiFi, Bluetooth, NFC, Mobile Data, Battery, Display, Audio, Sensors, Camera Functionality, Biometrics, User Preferences, Accessibility, Privacy, Account Management, Backup/Restore, Virtual Keyboard, Physical Keyboard, Text Prediction, Keyboard Layout, Photo Quality, Video Recording, Camera Modes, App Management, App Updates, App Crashes, App Permissions, System Settings, Navigation, Themes, Widgets, Setup Process, Device Registration, Home Screen, App Drawer, Icons, Gestures, App Switching, Corporate Profile, Security Policies, Work/Personal Separation, MDM Integration, Desktop Experience, Window Management, Dual Mode, Touch Response, Animations, Status Bar, Notification Panel, Notification Sounds, Do Not Disturb, Initial Configuration, Account Setup, Migration, Cross-platform Sync, Transfer Speed, Hotspot, AirDrop, Network Stability, Camera Hardware, Pre-installed Apps, Third-party Apps, App Store, System APIs, Memory Management, Boot Process, System Stability, User Interface, Miscellaneous, Unknown, Uncategorized, General Issues, Push Notifications
+Chain of Thought Instructions:
+1. Category Extraction:
+- CRITICAL: Extract the exact text from the PRIORITY field in ISSUE DETAILS. This is a mandatory requirement.
+- The PRIORITY field value is: {row['PRIORITY'] if pd.notna(row['PRIORITY']) else '[Missing]'}
+- You MUST use this exact value in your output as "Priority [Exact PRIORITY Value]"
+- If PRIORITY field is missing: Output "[Missing]"
+- Assign a single most relevant Category Label from the provided list by analyzing the core issue domain in DESCRIPTION and COMMENTS
+- Assign one or multiple relevant Sub-Category Labels that describe specific aspects of the issue (technology-focused, no vendor names)
+- Select only the most relevant labels that directly relate to the issue content
+- Output format: "Priority [Value from Priority field or "[Missing]"] Category: [Category Label] [Space-separated list of relevant Sub-Category Labels]"
+- IMPORTANT: Do not include "Sub-Category Labels:" in the output, just list the labels directly after the Category Label
+- CORRECT EXAMPLE: "Priority P2 Category: Connectivity Bluetooth Network Stability"
+- INCORRECT EXAMPLE: "Priority P2 Category: Connectivity Sub-Category Labels: Bluetooth Network Stability"
+- CORRECT FORMAT:
+Priority P2 Category: Connectivity Bluetooth Network Stability
+Highlights:
+  • Issue: [Issue description] Status: [Status]
+  • Problem: [Problem description]
+  • Final Action: [Final action description]
+2. Highlights Construction:
+- Issue: Extract from TITLE or DESCRIPTION
+- Status: Use the exact text from the STATUS field in ISSUE DETAILS (e.g., "Open", "Fixed", "In Progress", "Won't Fix", "Missing" if unclear)
+- Problem Description: Root cause from DESCRIPTION/COMMENTS (executive view)
+- Final Action: From COMMENTS/DESCRIPTION (concise explanation of resolution actions, clearly identifying whether Google or Samsung took the action and what was done)
+3. Formatting Requirements:
+- Format output exactly as specified below with no additional sections or content
+- Ensure no duplication of content between sections
+- Each bullet point in the Highlights section must be on its own line
+- The Highlights section must contain exactly three bullet points in this order:
+  1. Issue and Status on the same line
+  2. Problem on its own line
+  3. Final Action on its own line
+- The "Highlights:" section header must be on its own line, not combined with the Category line
+- Use the exact format specified to prevent structural issues
+4. Structure Output:
+- Priority [Value from Priority field or "[Missing]"] Category: [Category Label] [Space-separated list of relevant Sub-Category Labels]
+- Highlights:
+  • Issue: [value] Status: [value] (Use the exact text from the STATUS field in ISSUE DETAILS, e.g., "Open", "Fixed", "In Progress", "Won't Fix", "Missing" if unclear)
+  • Problem: [value]
+  • Final Action: [value] (Concise explanation of resolution actions, clearly identifying whether Google or Samsung took the action and what was done)
+5. Important Rules:
+- Strictly use only input field data (no inferences)
+- Use "[Missing]" for undefined values
+- Output exactly two sections in this precise order:
+  1. Category section (exactly one line)
+  2. Highlights section (exactly three lines)
+- Do not duplicate content
+- Follow the exact format specified to prevent structural issues
+"""
     try:
-        # Wait for metadata section to load
-        page.wait_for_selector("build-metadata", timeout=10000)
-        random_delay(1, 2)
-        
-        # Strategy 1: Find by traversing from label to output
-        try:
-            labels = page.query_selector_all("build-metadata label")
-            for label in labels:
-                label_text = label.text_content()
-                if "Approved By" in label_text:
-                    # Get the parent ape-labeled-row
-                    parent_row = label.evaluate("element => element.closest('ape-labeled-row')")
-                    # Find output element within this row
-                    output = page.evaluate("""
-                        (element) => {
-                            const row = element.closest('ape-labeled-row');
-                            const output = row ? row.querySelector('output') : null;
-                            return output ? output.textContent : null;
-                        }
-                    """, label)
-                    if output:
-                        approved_by = output.strip()
-                        print(f"  Found 'Approved By' (Strategy 1): {approved_by}")
-                        return approved_by
-        except Exception as e:
-            print(f"  Strategy 1 failed: {e}")
-        
-        # Strategy 2: Direct XPath approach
-        try:
-            approved_by = page.evaluate("""
-                () => {
-                    const labels = document.querySelectorAll('build-metadata label');
-                    for (const label of labels) {
-                        if (label.textContent.includes('Approved By')) {
-                            const row = label.closest('ape-labeled-row');
-                            if (row) {
-                                const output = row.querySelector('output');
-                                if (output) {
-                                    return output.textContent.trim();
-                                }
-                            }
-                        }
-                    }
-                    return null;
-                }
-            """)
-            if approved_by:
-                print(f"  Found 'Approved By' (Strategy 2): {approved_by}")
-                return approved_by
-        except Exception as e:
-            print(f"  Strategy 2 failed: {e}")
-        
-        # Strategy 3: Find all ape-labeled-row elements and search
-        try:
-            rows = page.query_selector_all("ape-labeled-row")
-            for row in rows:
-                label = row.query_selector("label")
-                if label and "Approved By" in label.text_content():
-                    output = row.query_selector("output")
-                    if output:
-                        approved_by = output.text_content().strip()
-                        print(f"  Found 'Approved By' (Strategy 3): {approved_by}")
-                        return approved_by
-        except Exception as e:
-            print(f"  Strategy 3 failed: {e}")
-        
-        # Debug: Print the metadata section HTML
-        print("  Could not find 'Approved By'. Printing metadata HTML for debugging:")
-        metadata_html = page.eval_on_selector("build-metadata", "el => el.innerHTML")
-        print(f"  Metadata HTML snippet: {metadata_html[:500]}...")
-        
-        return "Not Found"
+        import ollama
+        # Send to Ollama model with parameters to reduce hallucinations
+        response = ollama.generate(
+            model='hf.co/unsloth/Qwen3-30B-A3B-GGUF:Q5_K_M',
+            prompt=prompt,
+            options={
+                'temperature': 0.2,
+                'top_p': 0.3,
+                'num_predict': 2500,
+                'repeat_penalty': 1.1
+            }
+        )
+
+        full_response = response['response'].strip()
+        pattern = r"<think>.*?</think>"
+        cleaned_response = re.sub(pattern, "", full_response, flags=re.DOTALL)
+        return cleaned_response.strip()
     except Exception as e:
-        print(f"  Error getting approved by: {e}")
-        import traceback
-        traceback.print_exc()
-        return "Error"
+        print(f"Error processing issue {row['ISSUE_ID']}: {e}")
+        return f"Error generating snapshot: {str(e)}"
 
-def classify_approval_type(approved_by):
-    """Classify the approval type based on who approved"""
-    if approved_by == "APFE":
-        return "Auto"
-    elif approved_by == "android-partner-prodops@system.gserviceaccount.com":
-        return "Bot"
-    elif approved_by in ["Not Found", "Error", "No Builds Found", "Navigation Error"]:
-        return approved_by
-    else:
-        return "Human"
-
-def process_csv_data(page, base_url, csv_file):
-    """Process all fingerprints from CSV file"""
-    df = pd.read_csv(csv_file)
+def process_csv(input_file, output_file, use_gemini=False):
+    """Process the entire CSV file and save snapshots"""
     
-    # Limit to first 5 rows for testing
-    df = df[:5]
+    # Read the input CSV
+    df = pd.read_csv(input_file)
     
-    all_results = []
-    multi_search_results = []
-    navigation_failures = 0
+    # Create a new dataframe for snapshots
+    snapshot_data = []
     
-    print(f"Processing {len(df)} fingerprints from {csv_file}")
+    model_name = "Gemini" if use_gemini else "Ollama"
+    print(f"Processing {len(df)} issues using {model_name}...")
     
+    # Process each row
     for index, row in df.iterrows():
-        fingerprint = row['Fingerprint']
-        print(f"\n{'='*60}")
-        print(f"Processing fingerprint {index + 1}/{len(df)}: {fingerprint}")
-        print(f"{'='*60}")
+        print(f"Processing issue {index + 1}/{len(df)}: {row['ISSUE_ID']}")
         
-        # Add random delay between searches to avoid rate limiting
-        if index > 0:
-            random_delay(3, 6)
-        
-        # Search for the build
-        if not search_builds(page, base_url, fingerprint):
-            continue
-        
-        # Extract links from results page
-        build_links = extract_build_links(page)
-        
-        if len(build_links) == 0:
-            print(f"No builds found for fingerprint: {fingerprint}")
-            approved_by = "No Builds Found"
-            approval_type = classify_approval_type(approved_by)
-            all_results.append({
-                'Fingerprint': fingerprint,
-                'Build Link': '',
-                'Approved By': approved_by,
-                'Approval Type': approval_type
-            })
-            continue
-        
-        # Handle multiple build links
-        if len(build_links) > 1:
-            print(f"Found {len(build_links)} builds for fingerprint: {fingerprint}")
-            for i, link in enumerate(build_links):
-                print(f"  Build {i+1}: {link}")
-                
-                # Add delay between navigations
-                random_delay(2, 4)
-                
-                if not navigate_with_retry(page, link, max_retries=3, retry_delay=10):
-                    print(f"  ⚠️  Skipping build {i+1} due to navigation failure")
-                    navigation_failures += 1
-                    multi_search_results.append({
-                        'Fingerprint': fingerprint,
-                        'Build Link': link,
-                        'Approved By': 'Navigation Error',
-                        'Approval Type': 'Navigation Error'
-                    })
-                    continue
-                
-                random_delay(2, 3)
-                approved_by = get_approved_by(page)
-                approval_type = classify_approval_type(approved_by)
-                
-                multi_search_results.append({
-                    'Fingerprint': fingerprint,
-                    'Build Link': link,
-                    'Approved By': approved_by,
-                    'Approval Type': approval_type
-                })
+        # Generate snapshot using selected model
+        if use_gemini:
+            snapshot = gemini_generate_snapshot(row)
         else:
-            link = build_links[0]
-            print(f"Single build found: {link}")
-            
-            random_delay(2, 4)
-            
-            if not navigate_with_retry(page, link, max_retries=3, retry_delay=10):
-                print(f"  ⚠️  Skipping due to navigation failure")
-                navigation_failures += 1
-                all_results.append({
-                    'Fingerprint': fingerprint,
-                    'Build Link': link,
-                    'Approved By': 'Navigation Error',
-                    'Approval Type': 'Navigation Error'
-                })
-                continue
-            
-            random_delay(2, 3)
-            approved_by = get_approved_by(page)
-            approval_type = classify_approval_type(approved_by)
-            
-            all_results.append({
-                'Fingerprint': fingerprint,
-                'Build Link': link,
-                'Approved By': approved_by,
-                'Approval Type': approval_type
-            })
-    
-    if navigation_failures > 0:
-        print(f"\n⚠️  Warning: {navigation_failures} navigation failures occurred")
-    
-    return all_results, multi_search_results
-
-def main():
-    base_url = "https://partner.android.com/approvals/builds?a=8010&q="
-    csv_file = "SearchData.csv"
-    
-    with sync_playwright() as playwright:
-        browser, context, page = setup_browser(playwright)
+            snapshot = ollama_generate_snapshot(row)
         
-        try:
-            # Wait for user to log in
-            if not wait_for_login(page, base_url):
-                print("Failed to detect login. Exiting.")
-                return
-            
-            # Wait for user input before starting processing
-            wait_for_user_input()
-            
-            # Process CSV data
-            if not os.path.exists(csv_file):
-                print(f"{csv_file} file not found. Please create a CSV with Fingerprint column.")
-                return
-            
-            all_results, multi_search_results = process_csv_data(page, base_url, csv_file)
-            
-            # Save results to CSV files
-            if all_results:
-                df_all = pd.DataFrame(all_results)
-                df_all.to_csv("results.csv", index=False)
-                print(f"\nSaved {len(all_results)} results to results.csv")
-                
-                # Print summary of approval types
-                print("\n" + "="*60)
-                print("APPROVAL TYPE SUMMARY")
-                print("="*60)
-                approval_counts = df_all['Approval Type'].value_counts()
-                for approval_type, count in approval_counts.items():
-                    print(f"{approval_type}: {count}")
-                print("="*60)
-            
-            if multi_search_results:
-                df_multi = pd.DataFrame(multi_search_results)
-                df_multi.to_csv("multi_search_results.csv", index=False)
-                print(f"\nSaved {len(multi_search_results)} multi-search results to multi_search_results.csv")
-                
-                # Print summary for multi-search results too
-                print("\n" + "="*60)
-                print("MULTI-SEARCH APPROVAL TYPE SUMMARY")
-                print("="*60)
-                approval_counts_multi = df_multi['Approval Type'].value_counts()
-                for approval_type, count in approval_counts_multi.items():
-                    print(f"{approval_type}: {count}")
-                print("="*60)
+        # Add to snapshot data
+        snapshot_data.append({
+            'ISSUE_ID': row['ISSUE_ID'],
+            'SNAPSHOT': snapshot,
+            'TIMESTAMP': datetime.now().isoformat()
+        })
         
-        except Exception as e:
-            print(f"An error occurred: {e}")
-            import traceback
-            traceback.print_exc()
-        finally:
-            browser.close()
+        # Add a small delay to avoid overwhelming the API
+        time.sleep(0.1)
+    
+    # Create DataFrame with snapshots
+    snapshots_df = pd.DataFrame(snapshot_data)
+    
+    # Save to CSV
+    snapshots_df.to_csv(output_file, index=False)
+    print(f"Snapshots saved to {output_file}")
 
+# Main execution
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser(description='Process CSV and generate snapshots')
+    parser.add_argument('--input', default='test.csv', help='Input CSV file path')
+    parser.add_argument('--output', default='test_output.csv', help='Output CSV file path')
+    parser.add_argument('--use-gemini', action='store_true', help='Use Gemini instead of Ollama')
+    
+    args = parser.parse_args()
+    
+    process_csv(args.input, args.output, use_gemini=args.use_gemini)
