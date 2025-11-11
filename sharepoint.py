@@ -1,10 +1,10 @@
-Here's the enhanced script with quantization, DOCX output, and improved prompts:
+Here's the updated script with the original prompt structure, proper markdown parsing, and weekly report consolidation:
 
 ```python
 """
 RAG-based PDF Analysis System with Quantization and DOCX Output
-This script processes PDFs in a target folder, creates embeddings using quantization for speed,
-and generates organized reports in DOCX format.
+This script processes weekly PDF reports, creates embeddings using quantization for speed,
+and generates consolidated reports in DOCX format.
 """
 
 import os
@@ -21,6 +21,7 @@ from docx import Document
 from docx.shared import Pt, RGBColor, Inches
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 from datetime import datetime
+import re
 
 # ============================================================================
 # MODEL DOWNLOAD AND CACHE MANAGEMENT
@@ -333,11 +334,11 @@ def chunk_text(text: str, chunk_size: int = 1500, overlap: int = 300) -> List[st
 
 
 # ============================================================================
-# DOCX REPORT GENERATION
+# DOCX REPORT GENERATION WITH MARKDOWN PARSING
 # ============================================================================
 
 class DOCXReportGenerator:
-    """Generate professional DOCX reports."""
+    """Generate professional DOCX reports with proper markdown parsing."""
     
     def __init__(self, filename: str = "rag_analysis_report.docx"):
         self.filename = filename
@@ -377,22 +378,119 @@ class DOCXReportGenerator:
         
         self.document.add_paragraph()
     
-    def add_section(self, heading: str, content: str, level: int = 1):
-        """Add a section with heading and content."""
-        self.document.add_heading(heading, level=level)
+    def parse_and_add_markdown(self, content: str):
+        """
+        Parse markdown content and add to document with proper formatting.
         
-        # Split content into paragraphs
-        paragraphs = content.split('\n')
-        for para in paragraphs:
-            para = para.strip()
-            if para:
-                # Check if it's a bullet point
-                if para.startswith('-') or para.startswith('•'):
-                    p = self.document.add_paragraph(para.lstrip('-•').strip(), style='List Bullet')
-                elif para.startswith(('1.', '2.', '3.', '4.', '5.', '6.', '7.', '8.', '9.')):
-                    p = self.document.add_paragraph(para.split('.', 1)[1].strip(), style='List Number')
-                else:
-                    p = self.document.add_paragraph(para)
+        Args:
+            content: Markdown formatted text
+        """
+        lines = content.split('\n')
+        i = 0
+        
+        while i < len(lines):
+            line = lines[i].strip()
+            
+            if not line:
+                i += 1
+                continue
+            
+            # Handle headers
+            if line.startswith('# '):
+                # H1
+                text = line.lstrip('#').strip()
+                self.document.add_heading(text, level=1)
+            elif line.startswith('## '):
+                # H2
+                text = line.lstrip('#').strip()
+                self.document.add_heading(text, level=2)
+            elif line.startswith('### '):
+                # H3
+                text = line.lstrip('#').strip()
+                self.document.add_heading(text, level=3)
+            elif line.startswith('#### '):
+                # H4
+                text = line.lstrip('#').strip()
+                self.document.add_heading(text, level=4)
+            
+            # Handle horizontal rules
+            elif line.startswith('---') or line.startswith('***'):
+                self.document.add_paragraph('_' * 80)
+            
+            # Handle bullet points
+            elif line.startswith('- ') or line.startswith('* '):
+                text = line.lstrip('-*').strip()
+                text = self._process_inline_formatting(text)
+                p = self.document.add_paragraph(style='List Bullet')
+                self._add_formatted_text(p, text)
+            
+            # Handle numbered lists
+            elif re.match(r'^\d+\.\s', line):
+                text = re.sub(r'^\d+\.\s', '', line)
+                text = self._process_inline_formatting(text)
+                p = self.document.add_paragraph(style='List Number')
+                self._add_formatted_text(p, text)
+            
+            # Handle blockquotes
+            elif line.startswith('> '):
+                text = line.lstrip('>').strip()
+                text = self._process_inline_formatting(text)
+                p = self.document.add_paragraph()
+                p.paragraph_format.left_indent = Inches(0.5)
+                self._add_formatted_text(p, text)
+                run = p.runs[0]
+                run.italic = True
+            
+            # Regular paragraph
+            else:
+                text = self._process_inline_formatting(line)
+                p = self.document.add_paragraph()
+                self._add_formatted_text(p, text)
+            
+            i += 1
+    
+    def _process_inline_formatting(self, text: str) -> str:
+        """Process inline markdown formatting markers."""
+        # We'll handle this in _add_formatted_text
+        return text
+    
+    def _add_formatted_text(self, paragraph, text: str):
+        """
+        Add text to paragraph with inline formatting (bold, italic, code).
+        
+        Args:
+            paragraph: Document paragraph object
+            text: Text with markdown formatting
+        """
+        # Pattern to match bold, italic, and code
+        pattern = r'(\*\*\*.*?\*\*\*|\*\*.*?\*\*|\*.*?\*|`.*?`)'
+        parts = re.split(pattern, text)
+        
+        for part in parts:
+            if not part:
+                continue
+            
+            # Bold and italic
+            if part.startswith('***') and part.endswith('***'):
+                run = paragraph.add_run(part[3:-3])
+                run.bold = True
+                run.italic = True
+            # Bold
+            elif part.startswith('**') and part.endswith('**'):
+                run = paragraph.add_run(part[2:-2])
+                run.bold = True
+            # Italic
+            elif part.startswith('*') and part.endswith('*'):
+                run = paragraph.add_run(part[1:-1])
+                run.italic = True
+            # Code
+            elif part.startswith('`') and part.endswith('`'):
+                run = paragraph.add_run(part[1:-1])
+                run.font.name = 'Courier New'
+                run.font.size = Pt(10)
+            # Regular text
+            else:
+                paragraph.add_run(part)
     
     def add_page_break(self):
         """Add a page break."""
@@ -433,7 +531,7 @@ class RAGSystem:
             print(f"\n⚠ Please add PDF files to the '{self.pdf_folder}' folder and run again.")
             return
         
-        pdf_files = list(pdf_path.glob("*.pdf"))
+        pdf_files = sorted(list(pdf_path.glob("*.pdf")))  # Sort for consistent ordering
         
         if not pdf_files:
             print(f"\n⚠ No PDF files found in '{self.pdf_folder}' folder.")
@@ -441,9 +539,9 @@ class RAGSystem:
             return
         
         print(f"\n{'='*80}")
-        print(f"LOADING PDF FILES")
+        print(f"LOADING WEEKLY REPORT PDFs")
         print(f"{'='*80}")
-        print(f"Found {len(pdf_files)} PDF file(s). Processing...\n")
+        print(f"Found {len(pdf_files)} weekly report(s). Processing...\n")
         
         for pdf_file in pdf_files:
             print(f"Processing: {pdf_file.name}")
@@ -463,7 +561,7 @@ class RAGSystem:
                 
                 print(f"  ✓ Extracted {len(chunks)} chunks")
         
-        print(f"\n✓ Loaded {len(self.documents)} text chunks from {len(pdf_files)} PDF(s).")
+        print(f"\n✓ Loaded {len(self.documents)} text chunks from {len(pdf_files)} weekly report(s).")
     
     def create_embeddings(self, batch_size: int = 16):
         """Create embeddings for all document chunks with batching."""
@@ -521,7 +619,7 @@ class RAGSystem:
     
     def generate_comprehensive_report(self, top_k_per_topic: int = 15):
         """
-        Generate a comprehensive report analyzing all PDFs for unique topics and events.
+        Generate a comprehensive consolidated report from all weekly reports.
         
         Args:
             top_k_per_topic: Number of chunks to retrieve per analysis
@@ -531,194 +629,129 @@ class RAGSystem:
             return
         
         print(f"\n{'='*80}")
-        print("GENERATING COMPREHENSIVE REPORT")
+        print("GENERATING CONSOLIDATED WEEKLY REPORT")
         print(f"{'='*80}")
         
         # Initialize DOCX generator
-        docx_gen = DOCXReportGenerator("rag_analysis_report.docx")
-        docx_gen.add_title("RAG-Based PDF Analysis Report")
+        docx_gen = DOCXReportGenerator("consolidated_weekly_report.docx")
+        docx_gen.add_title("Consolidated Weekly Report Analysis")
         
         # Add metadata
-        unique_pdfs = list(set([m['filename'] for m in self.pdf_metadata]))
+        unique_pdfs = sorted(list(set([m['filename'] for m in self.pdf_metadata])))
         metadata = {
             "Generated": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            "Total PDFs Analyzed": len(unique_pdfs),
-            "PDF Files": ", ".join(unique_pdfs),
-            "Total Chunks Processed": len(self.documents),
-            "Analysis Method": "RAG with Semantic Search"
+            "Total Weekly Reports": len(unique_pdfs),
+            "Report Files": ", ".join(unique_pdfs),
+            "Total Sections Analyzed": len(self.documents),
+            "Analysis Method": "RAG with Semantic Consolidation"
         }
         docx_gen.add_metadata(metadata)
-        
-        # First pass: Identify main topics and structure
-        print("\nStep 1: Identifying document structure and main topics...")
-        
-        topic_query = "document structure sections topics chapters headings themes categories"
-        relevant_chunks = self.retrieve_relevant_chunks(topic_query, top_k=top_k_per_topic)
-        
-        context = "\n\n".join([
-            f"[Source: {meta['filename']}, Section {meta['chunk_id']+1}/{meta['total_chunks']}]\n{chunk}" 
-            for chunk, _, meta in relevant_chunks
-        ])
-        
-        # Enhanced prompt to reduce hallucinations
-        topic_prompt = f"""You are analyzing structured PDF reports. Your task is to identify the organizational structure and main topics.
-
-CRITICAL INSTRUCTIONS:
-1. ONLY extract information that is EXPLICITLY stated in the provided text
-2. DO NOT infer, assume, or generate any information not directly present
-3. DO NOT add examples, explanations, or elaborations beyond what is stated
-4. If information is unclear or not present, explicitly state "Not found in provided text"
-5. Quote or reference specific sections when identifying topics
-
-DOCUMENT EXCERPTS:
-{context}
-
-Based ONLY on the text above, provide:
-
-1. **Document Structure**: List the main sections, chapters, or organizational divisions you can identify
-2. **Primary Topics**: List the key topics explicitly discussed
-3. **Document Types**: What type of reports are these (e.g., financial, technical, research)?
-
-FORMAT YOUR RESPONSE AS:
-## Document Structure
-[List identified sections/chapters with source references]
-
-## Primary Topics
-[List only topics explicitly mentioned]
-
-## Document Types
-[Classification based on content]
-
-Remember: Only report what is explicitly present in the text. No assumptions."""
-        
-        print("  Analyzing document structure...")
-        topics_response = self.inference_model.generate_response(topic_prompt, max_tokens=2048, temperature=0.1)
-        
-        print("\nIdentified Structure:")
-        print(topics_response)
-        
-        docx_gen.add_section("Document Structure Analysis", topics_response, level=1)
         docx_gen.add_page_break()
         
-        # Second pass: Extract detailed information by topic
-        print(f"\n{'-'*80}")
-        print("Step 2: Extracting detailed information from each section...")
-        print(f"{'-'*80}")
+        # Retrieve comprehensive chunks for analysis
+        print("\nAnalyzing all weekly reports for unique information...")
         
-        # Retrieve comprehensive chunks
         analysis_chunks = self.retrieve_relevant_chunks(
-            "all key findings data results information details", 
-            top_k=min(25, len(self.documents))
+            "all topics events activities findings updates progress issues accomplishments", 
+            top_k=min(30, len(self.documents))
         )
         
         full_context = "\n\n".join([
-            f"[Document: {meta['filename']}, Section {meta['chunk_id']+1}/{meta['total_chunks']}]\n{chunk}" 
+            f"[Week Report: {meta['filename']}, Section {meta['chunk_id']+1}]\n{chunk}" 
             for chunk, _, meta in analysis_chunks
         ])
         
-        # Enhanced final prompt with strict anti-hallucination measures
-        final_prompt = f"""You are creating a comprehensive analysis report from structured PDF documents. Your analysis must be FACTUAL and GROUNDED in the provided text.
+        # Enhanced prompt for weekly report consolidation
+        consolidation_prompt = f"""You are analyzing multiple weekly reports to create a consolidated summary. Each PDF represents a different week's report.
 
-STRICT RULES TO PREVENT HALLUCINATIONS:
-1. ONLY include information that is EXPLICITLY stated in the provided documents
-2. When stating any fact, data point, or finding, you MUST be able to point to it in the source text
-3. DO NOT add explanations, context, or information from general knowledge
-4. DO NOT make assumptions or inferences beyond what is directly stated
-5. If you cannot find specific information, write "Not found in source documents"
-6. Always cite the source document for each piece of information
-7. If numbers or data are mentioned, copy them EXACTLY as written
-8. DO NOT paraphrase in a way that changes meaning
-9. When in doubt, quote directly from the source
+TASK: Extract and organize all UNIQUE events, activities, findings, and updates across all weeks.
 
-PREVIOUSLY IDENTIFIED STRUCTURE:
-{topics_response}
+CRITICAL RULES:
+1. ONLY include information explicitly stated in the weekly reports
+2. Each unique point should be mentioned ONLY ONCE
+3. Group similar topics together
+4. Cite the source week for each point (e.g., "Week 1.pdf", "Week 2.pdf")
+5. If the same event appears in multiple weeks, note it only once with all relevant week references
+6. DO NOT add information not present in the reports
+7. DO NOT make assumptions or inferences
 
-SOURCE DOCUMENTS:
+WEEKLY REPORTS CONTENT:
 {full_context}
 
-YOUR TASK:
-Create a structured report that organizes the information found in these documents. Follow this format:
+Create a comprehensive consolidated report in the following format:
 
 # COMPREHENSIVE ANALYSIS REPORT
 
-## Executive Summary
-[2-3 sentences summarizing the key findings across all documents - ONLY based on content present]
+## Topic/Section 1: [Name]
+- Unique finding/event 1 (Source: Week_X.pdf)
+- Unique finding/event 2 (Source: Week_Y.pdf)
+- Recurring item mentioned in multiple weeks (Sources: Week_X.pdf, Week_Y.pdf, Week_Z.pdf)
 
----
+## Topic/Section 2: [Name]
+- Unique finding/event 1 (Source: Week_X.pdf)
+- Unique finding/event 2 (Source: Week_Y.pdf)
 
-## [Topic/Section 1 - Use actual title from documents]
-### Key Findings
-- Finding 1 (Source: filename.pdf, Section X)
-- Finding 2 (Source: filename.pdf, Section Y)
+[Continue for all identified topics]
 
-### Data Points
-- Data point 1 (Source: filename.pdf)
+## Cross-Week Patterns
+[Note any patterns or themes that appear across multiple weeks]
 
-### Notable Information
-- Information 1 (Source: filename.pdf)
-
----
-
-## [Topic/Section 2 - Use actual title from documents]
-[Repeat structure above]
-
----
-
-## Cross-Document Observations
-[ONLY if you found the same topic discussed in multiple documents, note any differences or consistencies]
-
----
-
-## Information Gaps
-[List any topics mentioned that lack detailed information in the provided excerpts]
-
-REMEMBER: 
-- Every statement must be traceable to source text
-- Cite sources for EVERYTHING
-- No creative writing or elaboration
-- No assumptions or general knowledge
-- If unsure, omit the information"""
+IMPORTANT: 
+- Every bullet point must cite its source week(s)
+- Avoid repetition - each unique piece of information appears only once
+- Group related information under appropriate topic headings
+- Use clear, descriptive topic headings based on the actual content"""
         
-        print("  Generating comprehensive analysis...")
-        final_report = self.inference_model.generate_response(final_prompt, max_tokens=8192, temperature=0.1)
+        print("  Generating consolidated analysis...")
+        final_report = self.inference_model.generate_response(
+            consolidation_prompt, 
+            max_tokens=8192, 
+            temperature=0.1
+        )
         
         print(f"\n{'='*80}")
-        print("FINAL REPORT")
+        print("CONSOLIDATED REPORT")
         print(f"{'='*80}\n")
         print(final_report)
         
-        # Add to DOCX
-        docx_gen.add_section("Detailed Analysis", final_report, level=1)
+        # Parse and add the markdown content to DOCX
+        docx_gen.parse_and_add_markdown(final_report)
         
         # Add disclaimer
         docx_gen.add_page_break()
-        disclaimer = """This report was generated using AI-powered analysis of the provided PDF documents. 
-The analysis is based solely on the content present in the source documents. 
-All findings and statements are extracted directly from the source materials and cited accordingly.
+        disclaimer = """This consolidated report was generated using AI-powered analysis of multiple weekly PDF reports. 
+The analysis extracts and organizes unique information from each week, eliminating redundancies and grouping related content.
 
-For critical decisions, please verify information by referring to the original source documents."""
+All findings and statements are extracted directly from the source weekly reports and cited accordingly. 
+Each item includes references to the specific week(s) where the information was found.
+
+For critical decisions or detailed information, please refer to the original weekly report documents."""
         
-        docx_gen.add_section("Disclaimer", disclaimer, level=1)
+        docx_gen.document.add_heading('Disclaimer', level=1)
+        for para in disclaimer.split('\n'):
+            if para.strip():
+                docx_gen.document.add_paragraph(para.strip())
         
         # Save DOCX
         docx_gen.save()
         
         # Also save text version for reference
-        with open("rag_analysis_report.txt", 'w', encoding='utf-8') as f:
+        with open("consolidated_weekly_report.txt", 'w', encoding='utf-8') as f:
             f.write("="*80 + "\n")
-            f.write("RAG-BASED PDF ANALYSIS REPORT\n")
+            f.write("CONSOLIDATED WEEKLY REPORT ANALYSIS\n")
             f.write("="*80 + "\n\n")
             f.write(f"Generated: {metadata['Generated']}\n")
-            f.write(f"Analyzed {len(unique_pdfs)} PDF file(s)\n")
-            f.write(f"Total chunks processed: {len(self.documents)}\n\n")
-            f.write("-"*80 + "\n\n")
-            f.write("DOCUMENT STRUCTURE ANALYSIS\n")
-            f.write("-"*80 + "\n\n")
-            f.write(topics_response)
-            f.write("\n\n" + "="*80 + "\n\n")
-            f.write("DETAILED ANALYSIS\n")
+            f.write(f"Analyzed {len(unique_pdfs)} weekly report(s)\n")
+            f.write(f"Weekly reports: {', '.join(unique_pdfs)}\n")
+            f.write(f"Total sections processed: {len(self.documents)}\n\n")
             f.write("="*80 + "\n\n")
             f.write(final_report)
+            f.write("\n\n" + "="*80 + "\n")
+            f.write("DISCLAIMER\n")
+            f.write("="*80 + "\n\n")
+            f.write(disclaimer)
+        
+        print(f"\n✓ Text version also saved to: consolidated_weekly_report.txt")
 
 
 # ============================================================================
@@ -728,8 +761,8 @@ For critical decisions, please verify information by referring to the original s
 def main():
     """Main execution function."""
     print(f"\n{'='*80}")
-    print("RAG-BASED PDF ANALYSIS SYSTEM")
-    print("With Quantization & DOCX Output")
+    print("WEEKLY REPORT CONSOLIDATION SYSTEM")
+    print("RAG-Based Analysis with Quantization")
     print(f"{'='*80}\n")
     
     # Check for GPU
@@ -747,24 +780,24 @@ def main():
         print("\nPlease check your internet connection and try again.")
         return
     
-    # Load PDFs
+    # Load weekly report PDFs
     rag_system.load_pdfs()
     
     if not rag_system.documents:
         print(f"\n{'='*80}")
-        print("NO DOCUMENTS TO PROCESS")
+        print("NO WEEKLY REPORTS TO PROCESS")
         print(f"{'='*80}")
-        print("\nExiting. Please add PDF files and run again.")
+        print("\nExiting. Please add weekly report PDF files and run again.")
         return
     
     # Create embeddings with larger batch size for speed
     rag_system.create_embeddings(batch_size=16)
     
-    # Generate comprehensive report
+    # Generate consolidated report
     rag_system.generate_comprehensive_report(top_k_per_topic=15)
     
     print(f"\n{'='*80}")
-    print("ANALYSIS COMPLETE")
+    print("CONSOLIDATION COMPLETE")
     print(f"{'='*80}\n")
 
 
@@ -772,52 +805,39 @@ if __name__ == "__main__":
     main()
 ```
 
-**Updated `requirements.txt`:**
+**Key Changes:**
 
-```txt
-torch>=2.0.0
-transformers>=4.51.0
-huggingface-hub>=0.20.0
-PyPDF2>=3.0.0
-numpy>=1.24.0
-python-docx>=1.1.0
-bitsandbytes>=0.41.0
-accelerate>=0.20.0
-```
+1. **Proper Markdown Parsing**:
+   - Added `parse_and_add_markdown()` method that properly handles:
+     - Headers (# ## ### ####)
+     - Bullet points (- *)
+     - Numbered lists (1. 2. 3.)
+     - Bold (\*\*text\*\*)
+     - Italic (\*text\*)
+     - Bold+Italic (\*\*\*text\*\*\*)
+     - Code blocks (\`code\`)
+     - Horizontal rules (--- ***)
+     - Blockquotes (>)
+   - No raw markdown symbols in final DOCX
 
-**Key Enhancements:**
+2. **Weekly Report Focus**:
+   - Prompt specifically designed for weekly reports
+   - Extracts unique points across all weeks
+   - Eliminates redundancies
+   - Groups by topics/sections
+   - Cites source week for each item
+   - Notes recurring items across multiple weeks
 
-1. **Quantization for Speed**:
-   - FP16 for embedding model (2x faster)
-   - 4-bit quantization for inference model (4x faster, 75% less memory)
-   - Batched embedding generation (processes multiple chunks at once)
+3. **DOCX Structure**:
+   - Report Metadata (kept)
+   - Consolidated Report (properly formatted, no markdown symbols)
+   - Disclaimer (kept)
+   - Only the consolidated analysis in the document
 
-2. **DOCX Output**:
-   - Professional formatted Word document
-   - Table of contents structure
-   - Metadata section
-   - Proper headings and styling
-   - Page breaks between sections
+4. **Original Prompt Style**:
+   - Topic/Section organization
+   - Bullet point format with sources
+   - Cross-week patterns section
+   - Clear headings and structure
 
-3. **Anti-Hallucination Measures**:
-   - Low temperature (0.1) for deterministic outputs
-   - Explicit instructions to ONLY use source text
-   - Source citation requirements in prompts
-   - "Not found in text" fallback instructions
-   - Repetition penalty to avoid loops
-   - Strict formatting requirements
-
-4. **Enhanced Prompts for Reports**:
-   - Recognizes structured report format
-   - Extracts sections and headings
-   - Preserves document organization
-   - Cross-references multiple documents
-   - Identifies information gaps
-
-5. **Performance Improvements**:
-   - Batch processing for embeddings
-   - Progress indicators during embedding creation
-   - GPU memory optimization
-   - Faster inference with quantization
-
-The script should now be **significantly faster** (especially embeddings) and produce **professional DOCX reports** with **minimal hallucinations**!
+The DOCX output will now be properly formatted with real headings, bold text, bullet points, etc., instead of showing markdown symbols!
