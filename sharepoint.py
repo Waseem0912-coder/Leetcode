@@ -1,108 +1,66 @@
-You got it. First, here is the detailed Pydantic Schema and LangChain structure for the action item extraction. Then, I'll provide the complete prompt for the agent.
-1. 🏗️ Pydantic Schema & LangChain Structure
-This is the key to getting reliable, structured JSON data from the LLM.
-The Pydantic Schema
-You'll define a Python class that tells the LLM exactly what data structure you want back. This gives it "guardrails."
-from pydantic import BaseModel, Field
-from typing import List, Optional
-
-class ActionItem(BaseModel):
-    """A single, discrete action item or task identified from the text."""
-    
-    description: str = Field(
-        ..., 
-        description="The full text of the action item. Must be a specific, actionable task."
-    )
-    
-    source_document: str = Field(
-        ..., 
-        description="The name of the source PDF document where this action item was found."
-    )
-    
-    context: Optional[str] = Field(
-        default=None, 
-        description="Brief context or project associated with the action item, if available."
-    )
-
-class ActionItemList(BaseModel):
-    """A list of all unique action items extracted from the reports."""
-    
-    action_items: List[ActionItem]
-
-The LangChain Structure (using LCEL)
-You would use this ActionItemList schema with your LLM's .with_structured_output() method. This forces the LLM to only output JSON that validates against your schema.
-# This is a conceptual example of the chain part
-from langchain_openai import ChatOpenAI
-from langchain_core.prompts import ChatPromptTemplate
-
-# 1. Initialize your LLM
-# Make sure to use a model that supports function calling / structured output
-llm = ChatOpenAI(model="gpt-4-turbo", temperature=0)
-
-# 2. Bind the schema to the LLM
-structured_llm = llm.with_structured_output(ActionItemList)
-
-# 3. Create a prompt
-prompt = ChatPromptTemplate.from_messages([
-    ("system", """You are an expert assistant. Your task is to analyze the provided text
-     from multiple reports and extract ALL action items.
-     
-     An action item is a discrete task or to-do. Ignore vague statements.
-     Use the 'source_document' field from the metadata to populate the source.
-     
-     Respond ONLY with the JSON structure requested."""),
-    ("user", "{retrieved_context}") # This context comes from your vector store
-])
-
-# 4. Create the chain
-# This chain will automatically retrieve context, format the prompt,
-# call the LLM, and parse the output into your Pydantic object.
-action_item_chain = (
-    retriever | 
-    (lambda docs: {"retrieved_context": format_docs(docs)}) | # 'format_docs' is a helper function you write
-    prompt |
-    structured_llm
-)
-
-# 5. Run the chain
-# The 'result' will be an instance of your ActionItemList Pydantic class
-# result = action_item_chain.invoke({"query": "Extract all action items"})
-
-2. 🤖 Agent Prompt to Generate the Script
-Here is a comprehensive prompt you can give to an AI agent (like me, in a new chat) to generate the complete Python script, detailing all the steps we've discussed.
-> System: You are an expert Python developer specializing in building RAG (Retrieval-Augmented Generation) pipelines using LangChain and LlamaIndex. Your task is to write a complete, executable Python script based on the user's requirements.
+Here is the comprehensive prompt for the agent.
+This prompt is highly detailed to incorporate all your specific requirements: scalability for 100 PDFs, use of quantized models for local/efficient processing, strict anti-hallucination measures, and the dynamic topic discovery (Option B) pipeline.
+🤖 Agent Prompt:
+> System: You are an expert Python developer specializing in building scalable, local-first RAG (Retrieval-Augmented Generation) pipelines. Your task is to write a complete, executable Python script that performs topic-based extraction from a large number of PDFs and compiles them into a DOCX report.
 > User:
 > Goal:
-> Create a Python script named report_generator.py. This script will function as an "Auto Report Generator" that reads multiple PDF files from a directory, uses a RAG pipeline to process them, and generates a single consolidated PDF report as output.
-> Output Requirements:
-> The final generated PDF must contain two distinct sections:
->  * Consolidated Report: A comprehensive summary and consolidation of the key information, findings, and statuses from all the input PDFs.
->  * Unique Action Items: A clearly formatted list (e.g., a bulleted list or table) of all unique action items extracted from the documents. This list must be deduplicated.
-> Script Implementation Details:
-> Please use LangChain (LCEL) for the pipeline orchestration.
+> Create a Python script named auto_report.py that can process a large directory (e.S., 100+ PDFs) and generate a single, structured .docx report. The script must be optimized for local execution by using quantized models and efficient data handling.
+> Core Pipeline (Mandatory):
+>  * Ingest & Index: Efficiently load, chunk, and index all PDFs into a local vector store.
+>  * Dynamic Topic Discovery: First, use the LLM to analyze the documents and dynamically generate a list of the main topics.
+>  * Topic-Based Extraction: Loop through this dynamic topic list. For each topic, retrieve all relevant context from the vector store and use an LLM to extract all key bullet points.
+>  * Deduplication: Clean the extracted bullet points to remove duplicates.
+>  * Report Generation: Compile all unique bullet points, organized by their topic, into a .docx file.
+> Technical Constraints (Strict):
+> 1. Scalability (100+ PDFs):
+>  * Do not try to load all document text into the LLM context. This must be a retrieval-based (RAG) pipeline.
+>  * Use Chroma (or FAISS) for the vector store to handle the large number of indexed chunks.
+> 2. Local & Quantized Models (Efficiency):
+>  * Embeddings: Use HuggingFaceEmbeddings. Specify a lightweight, fast model (e.g., all-MiniLM-L6-v2 or bge-small-en-v1.5).
+>  * LLM: Use LlamaCpp to run a local, quantized GGUF model. This is critical for performance and to respect the user's "lower precision" request.
+>  * In the script, define the LlamaCpp LLM. Use a placeholder path like ./models/your_model.gguf and add a comment telling the user to download a model (e.g., Mistral-7B-Instruct-v0.2.Q5_K_M.gguf) and place it there.
+> 3. Anti-Hallucination (Accuracy):
+>  * All LLM prompts must be engineered to prevent hallucination.
+>  * Rule 1: Explicitly instruct the LLM to "base its answer ONLY on the provided context."
+>  * Rule 2: Instruct the LLM that if no relevant information is found in the context, it should output an empty list ([]) and nothing else.
+> Detailed Script Implementation:
+> Please use LangChain (LCEL) for all chains.
 > Step 1: Document Ingestion & Indexing
->  * The script must accept a directory path (e.g., ./source_pdfs) as input.
->  * Load PDFs: Use UnstructuredPDFLoader (or LlamaParse if you note it as a requirement) to load all PDFs from the directory. It's crucial to handle complex layouts, tables, and lists.
->  * Chunking: Use a RecursiveCharacterTextSplitter to chunk the documents. Ensure the splitting is context-aware (e.g., splitting on markdown headers or new lines).
->  * Embeddings: Use a local embedding model (e.g., HuggingFaceEmbeddings with all-MiniLM-L6-v2) to create vector embeddings.
->  * Vector Store: Store the chunks and embeddings in a local vector store like Chroma or FAISS.
->  * Retriever: Create a retriever object from the vector store.
-> Step 2: The RAG Pipeline (Two-Pass Generation)
-> This is a multi-step process.
->  * Pass 1: Consolidated Report Generation
->    * Create a chain that uses the retriever to fetch relevant context from all documents based on a general query (e.g., "Consolidate all report findings").
->    * Use a prompt template (e.g., ChatPromptTemplate) to instruct an LLM (e.g., ChatOpenAI) to write a full, consolidated report in Markdown format.
->  * Pass 2: Unique Action Item Extraction (Two-Step Extraction)
->    * A. Initial Extraction (Structured Output):
->      * Define a Pydantic schema for the action items. It must include fields for description: str and source_document: str.
->      * Create a new chain that passes the retrieved context to an LLM using .with_structured_output() bound to the Pydantic schema. This will extract all action items it can find, resulting in a JSON list (which may have duplicates).
->    * B. Deduplication:
->      * Take the raw JSON list of action items from step (A).
->      * Create a second LLM chain. The prompt for this chain should be: "Review the following JSON list of action items. Consolidate items that are semantically identical or refer to the same task. Output only the final, unique list of action items, in the same JSON format."
-> Step 3: Final PDF Generation
->  * The script must take the Markdown text from Pass 1 and the final unique JSON from Pass 2.
->  * Format the JSON action items into a clean Markdown list or table.
->  * Append the "Action Items" Markdown to the "Consolidated Report" Markdown.
->  * Use a Python library (like markdown-pdf, WeasyPrint, or ReportLab) to convert this final, complete Markdown string into a single output PDF file (e.g., Consolidated_Report.pdf).
-> Please include requirements.txt and provide comments in the code explaining each major step (Loading, Indexing, RAG Chain 1, RAG Chain 2, PDF Generation).
+>  * Use PyPDFDirectoryLoader (or iterate with PyPDFLoader) to load all PDFs from a ./source_pdfs/ directory.
+>  * Chunk documents using RecursiveCharacterTextSplitter.
+>  * Create the vector store using Chroma and the specified HuggingFaceEmbeddings model.
+> Step 2: LLM & Chain Definitions
+>  * Define the LlamaCpp LLM object, pointing to the placeholder model path.
+>  * Define a ChatPromptTemplate and an StrOutputParser or JsonOutputParser as needed.
+> Step 3: Dynamic Topic Generation (Pass 1)
+>  * Create a retriever from the vector store.
+>  * Retrieve a broad sample of documents (e.g., retriever.get_relevant_documents(query="all key topics")).
+>  * Create a chain (topic_chain) with a prompt that instructs the local LLM to:
+>    * "Analyze the following context. Based ONLY on this context, identify the 5-7 most important, high-level topics.
+>    * "Respond ONLY with a JSON list of strings. Example: ['Project Budget', 'Security Risks', 'Timeline']"
+>    * "If no topics are clear, respond with []."
+>  * Run this chain to get the dynamic_topics_list.
+> Step 4: Topic-Based Extraction Loop (Pass 2 & 3)
+>  * Initialize an empty dictionary: compiled_data = {}.
+>  * Loop through each topic in the dynamic_topics_list.
+>  * Inside the loop:
+>    * A. Retrieve: retrieved_docs = retriever.get_relevant_documents(f"All facts about {topic}").
+>    * B. Extract Chain (Pass 2): Create a chain that takes context and topic. The prompt must be:
+>      * "You are an extractor. Based ONLY on the provided context, extract all bullet points and key facts related to the topic: {topic}."
+>      * "Respond ONLY with a JSON list of strings. Each string is one bullet point."
+>      * "If no relevant information is found, respond ONLY with []."
+>    * C. Deduplication Chain (Pass 3): Create a chain that takes the list of extracted bullets.
+>      * Prompt: "Review the following list. Consolidate items that are semantically identical. Return ONLY the final, unique JSON list of strings."
+>    * D. Store: Store the final, unique list in compiled_data[topic].
+> Step 5: DOCX Generation
+>  * Use python-docx.
+>  * Create a new Document().
+>  * Add a main title.
+>  * Loop through the compiled_data dictionary:
+>    * For each topic (key), add a document.add_heading(topic, level=1).
+>    * For each bullet (in the value list), add a document.add_paragraph(bullet, style='List Bullet').
+>  * Save the file as Consolidated_Report.docx.
+> Final Output:
+>  * The complete auto_report.py script.
+>  * A requirements.txt file (must include langchain, llama-cpp-python, huggingface-hub, sentence-transformers, chromadb, pypdf, python-docx).
 > 
