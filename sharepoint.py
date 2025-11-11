@@ -1,408 +1,454 @@
-# @/extractor.py
+Here's a complete Python script that implements a RAG-based approach to analyze PDFs and generate organized reports:
+
+```python
+"""
+RAG-based PDF Analysis System
+This script processes PDFs in a target folder, creates embeddings, and generates
+organized reports of unique topics and events using separate models for embedding and inference.
+"""
 
 import os
-import re
-import argparse
+import torch
+import torch.nn.functional as F
+from torch import Tensor
+from transformers import AutoTokenizer, AutoModel, AutoModelForCausalLM
+from typing import List, Dict, Tuple
+import PyPDF2
+import numpy as np
 from pathlib import Path
-from typing import List, Dict, Set, Tuple
-import logging
+import json
 
-logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(message)s')
-logger = logging.getLogger(__name__)
+# ============================================================================
+# EMBEDDING MODEL SETUP (Qwen3-Embedding-0.6B)
+# ============================================================================
+
+def last_token_pool(last_hidden_states: Tensor, attention_mask: Tensor) -> Tensor:
+    """Pool the last token from the hidden states."""
+    left_padding = (attention_mask[:, -1].sum() == attention_mask.shape[0])
+    if left_padding:
+        return last_hidden_states[:, -1]
+    else:
+        sequence_lengths = attention_mask.sum(dim=1) - 1
+        batch_size = last_hidden_states.shape[0]
+        return last_hidden_states[torch.arange(batch_size, device=last_hidden_states.device), sequence_lengths]
 
 
-class TestCaseExtractor:
-    """Extract test cases from Android CTS source code."""
+def get_detailed_instruct(task_description: str, query: str) -> str:
+    """Format instruction for embedding model."""
+    return f'Instruct: {task_description}\nQuery: {query}'
+
+
+class EmbeddingModel:
+    """Handles text embedding generation using Qwen3-Embedding-0.6B."""
     
-    # Test-related annotations
-    TEST_ANNOTATIONS = [
-        r'@Test\b',
-        r'@SmallTest\b',
-        r'@MediumTest\b',
-        r'@LargeTest\b',
-        r'@FlakyTest\b',
-        r'@Presubmit\b',
-        r'@AppModeFull\b',
-        r'@AppModeInstant\b',
-    ]
+    def __init__(self, model_name='Qwen/Qwen3-Embedding-0.6B'):
+        print(f"Loading embedding model: {model_name}...")
+        self.tokenizer = AutoTokenizer.from_pretrained(model_name, padding_side='left')
+        self.model = AutoModel.from_pretrained(model_name)
+        self.max_length = 8192
+        self.device = self.model.device
+        print("Embedding model loaded successfully.")
     
-    # Patterns for test methods
-    JAVA_TEST_METHOD = re.compile(
-        r'@\w*[Tt]est\w*.*?\n\s*public\s+void\s+(\w+)\s*\(',
-        re.DOTALL
-    )
+    def create_embeddings(self, texts: List[str], task_description: str = None) -> Tensor:
+        """
+        Create embeddings for a list of texts.
+        
+        Args:
+            texts: List of text strings to embed
+            task_description: Optional task description for queries
+        
+        Returns:
+            Normalized embeddings tensor
+        """
+        # Add instruction prefix if task description provided
+        if task_description:
+            input_texts = [get_detailed_instruct(task_description, text) for text in texts]
+        else:
+            input_texts = texts
+        
+        # Tokenize
+        batch_dict = self.tokenizer(
+            input_texts,
+            padding=True,
+            truncation=True,
+            max_length=self.max_length,
+            return_tensors="pt",
+        )
+        batch_dict = batch_dict.to(self.device)
+        
+        # Generate embeddings
+        with torch.no_grad():
+            outputs = self.model(**batch_dict)
+            embeddings = last_token_pool(outputs.last_hidden_state, batch_dict['attention_mask'])
+        
+        # Normalize
+        embeddings = F.normalize(embeddings, p=2, dim=1)
+        return embeddings
+
+
+# ============================================================================
+# INFERENCE MODEL SETUP (Qwen3-1.7B)
+# ============================================================================
+
+class InferenceModel:
+    """Handles text generation using Qwen3-1.7B."""
     
-    KOTLIN_TEST_METHOD = re.compile(
-        r'@\w*[Tt]est\w*.*?\n\s*fun\s+(\w+)\s*\(',
-        re.DOTALL
-    )
+    def __init__(self, model_name="Qwen/Qwen3-1.7B"):
+        print(f"Loading inference model: {model_name}...")
+        self.tokenizer = AutoTokenizer.from_pretrained(model_name)
+        self.model = AutoModelForCausalLM.from_pretrained(
+            model_name,
+            torch_dtype="auto",
+            device_map="auto"
+        )
+        print("Inference model loaded successfully.")
     
-    PYTHON_TEST_METHOD = re.compile(
-        r'def\s+(test_\w+)\s*\(',
-        re.MULTILINE
-    )
-    
-    # Package declaration patterns
-    PACKAGE_PATTERN = re.compile(r'package\s+([\w.]+)\s*;')
-    
-    # Folders to search
-    TARGET_FOLDERS = ['tests', 'hostsidetests', 'common']
-    
-    def __init__(self, root_path: str):
-        self.root_path = Path(root_path)
-        self.test_cases = []
+    def generate_response(self, prompt: str, max_tokens: int = 4096) -> str:
+        """
+        Generate a response for the given prompt.
         
-    def extract_all(self) -> List[str]:
-        """Extract all test cases from the CTS source."""
-        logger.info(f"Scanning CTS directory: {self.root_path}")
+        Args:
+            prompt: The input prompt
+            max_tokens: Maximum number of tokens to generate
         
-        for target_folder in self.TARGET_FOLDERS:
-            folder_path = self.root_path / target_folder
-            if folder_path.exists():
-                logger.info(f"Processing folder: {target_folder}")
-                self._scan_directory(folder_path)
-            else:
-                logger.warning(f"Folder not found: {folder_path}")
+        Returns:
+            Generated text response
+        """
+        messages = [{"role": "user", "content": prompt}]
+        text = self.tokenizer.apply_chat_template(
+            messages,
+            tokenize=False,
+            add_generation_prompt=True,
+            enable_thinking=True
+        )
         
-        logger.info(f"Total test cases found: {len(self.test_cases)}")
-        return sorted(set(self.test_cases))
-    
-    def _scan_directory(self, directory: Path):
-        """Recursively scan directory for test files."""
-        # Find all test files
-        test_files = []
+        model_inputs = self.tokenizer([text], return_tensors="pt").to(self.model.device)
         
-        # Strategy 1: Look for src/android/*/cts pattern
-        test_files.extend(self._find_files_pattern1(directory))
+        # Generate
+        generated_ids = self.model.generate(
+            **model_inputs,
+            max_new_tokens=max_tokens
+        )
         
-        # Strategy 2: Look for any *Test.java, *Test.kt files
-        test_files.extend(self._find_files_pattern2(directory))
+        output_ids = generated_ids[0][len(model_inputs.input_ids[0]):].tolist()
         
-        # Strategy 3: Look in specific test source directories
-        test_files.extend(self._find_files_pattern3(directory))
-        
-        # Remove duplicates
-        test_files = list(set(test_files))
-        
-        logger.info(f"Found {len(test_files)} test files in {directory.name}")
-        
-        # Process each test file
-        for test_file in test_files:
-            self._process_test_file(test_file)
-    
-    def _find_files_pattern1(self, directory: Path) -> List[Path]:
-        """Find files matching src/android/*/cts pattern."""
-        files = []
-        src_dirs = directory.rglob('src/android')
-        
-        for src_dir in src_dirs:
-            # Look for cts folder
-            for cts_dir in src_dir.rglob('cts'):
-                if cts_dir.is_dir():
-                    files.extend(cts_dir.rglob('*Test.java'))
-                    files.extend(cts_dir.rglob('*Test.kt'))
-                    files.extend(cts_dir.rglob('*test*.py'))
-        
-        return files
-    
-    def _find_files_pattern2(self, directory: Path) -> List[Path]:
-        """Find all test files recursively."""
-        files = []
-        
-        # Java test files
-        files.extend(directory.rglob('*Test.java'))
-        files.extend(directory.rglob('*Tests.java'))
-        
-        # Kotlin test files
-        files.extend(directory.rglob('*Test.kt'))
-        files.extend(directory.rglob('*Tests.kt'))
-        
-        # Python test files
-        files.extend(directory.rglob('test_*.py'))
-        files.extend(directory.rglob('*_test.py'))
-        
-        return files
-    
-    def _find_files_pattern3(self, directory: Path) -> List[Path]:
-        """Find files in common test source directories."""
-        files = []
-        test_source_patterns = [
-            'src/test/java',
-            'src/androidTest/java',
-            'src/main/java',
-            'src/test/kotlin',
-            'src/androidTest/kotlin',
-        ]
-        
-        for pattern in test_source_patterns:
-            for test_dir in directory.rglob(pattern):
-                if test_dir.is_dir():
-                    files.extend(test_dir.rglob('*Test.java'))
-                    files.extend(test_dir.rglob('*Test.kt'))
-                    files.extend(test_dir.rglob('*Tests.java'))
-                    files.extend(test_dir.rglob('*Tests.kt'))
-        
-        return files
-    
-    def _process_test_file(self, file_path: Path):
-        """Process a single test file and extract test cases."""
+        # Parse thinking content
         try:
-            with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
-                content = f.read()
-            
-            # Determine file type and extract accordingly
-            if file_path.suffix == '.java':
-                self._extract_java_tests(file_path, content)
-            elif file_path.suffix == '.kt':
-                self._extract_kotlin_tests(file_path, content)
-            elif file_path.suffix == '.py':
-                self._extract_python_tests(file_path, content)
-                
-        except Exception as e:
-            logger.error(f"Error processing {file_path}: {e}")
-    
-    def _extract_java_tests(self, file_path: Path, content: str):
-        """Extract test cases from Java files."""
-        # Get package name
-        package = self._extract_package(content, file_path)
+            index = len(output_ids) - output_ids[::-1].index(151668)  # </think>
+        except ValueError:
+            index = 0
         
-        # Get class name (filename without .java)
-        class_name = file_path.stem
-        
-        # Find all test methods
-        test_methods = self._find_java_test_methods(content)
-        
-        if test_methods:
-            logger.debug(f"Found {len(test_methods)} tests in {file_path.name}")
-            
-            for method in test_methods:
-                test_case = f"{package}.{class_name}#{method}"
-                self.test_cases.append(test_case)
-    
-    def _extract_kotlin_tests(self, file_path: Path, content: str):
-        """Extract test cases from Kotlin files."""
-        # Get package name
-        package = self._extract_package(content, file_path)
-        
-        # Get class name
-        class_name = file_path.stem
-        
-        # Find all test methods
-        test_methods = self._find_kotlin_test_methods(content)
-        
-        if test_methods:
-            logger.debug(f"Found {len(test_methods)} tests in {file_path.name}")
-            
-            for method in test_methods:
-                test_case = f"{package}.{class_name}#{method}"
-                self.test_cases.append(test_case)
-    
-    def _extract_python_tests(self, file_path: Path, content: str):
-        """Extract test cases from Python files."""
-        # For Python, derive package from path
-        package = self._derive_package_from_path(file_path)
-        
-        # Get module name
-        module_name = file_path.stem
-        
-        # Find all test methods
-        test_methods = self._find_python_test_methods(content)
-        
-        if test_methods:
-            logger.debug(f"Found {len(test_methods)} tests in {file_path.name}")
-            
-            for method in test_methods:
-                test_case = f"{package}.{module_name}#{method}"
-                self.test_cases.append(test_case)
-    
-    def _find_java_test_methods(self, content: str) -> List[str]:
-        """Find Java test method names."""
-        methods = []
-        
-        # Pattern 1: @Test annotation
-        matches = self.JAVA_TEST_METHOD.findall(content)
-        methods.extend(matches)
-        
-        # Pattern 2: Methods starting with 'test'
-        test_prefix_pattern = re.compile(
-            r'public\s+void\s+(test\w+)\s*\(',
-            re.MULTILINE
-        )
-        matches = test_prefix_pattern.findall(content)
-        methods.extend(matches)
-        
-        return list(set(methods))  # Remove duplicates
-    
-    def _find_kotlin_test_methods(self, content: str) -> List[str]:
-        """Find Kotlin test method names."""
-        methods = []
-        
-        # Pattern 1: @Test annotation
-        matches = self.KOTLIN_TEST_METHOD.findall(content)
-        methods.extend(matches)
-        
-        # Pattern 2: Functions starting with 'test'
-        test_prefix_pattern = re.compile(
-            r'fun\s+(test\w+)\s*\(',
-            re.MULTILINE
-        )
-        matches = test_prefix_pattern.findall(content)
-        methods.extend(matches)
-        
-        return list(set(methods))
-    
-    def _find_python_test_methods(self, content: str) -> List[str]:
-        """Find Python test method names."""
-        matches = self.PYTHON_TEST_METHOD.findall(content)
-        return list(set(matches))
-    
-    def _extract_package(self, content: str, file_path: Path) -> str:
-        """Extract package name from file content or path."""
-        # Try to find package declaration in file
-        match = self.PACKAGE_PATTERN.search(content)
-        if match:
-            return match.group(1)
-        
-        # Fall back to deriving from path
-        return self._derive_package_from_path(file_path)
-    
-    def _derive_package_from_path(self, file_path: Path) -> str:
-        """Derive package name from file path."""
-        parts = file_path.parts
-        
-        # Look for 'android' in path and build package from there
-        try:
-            # Find 'src' directory
-            if 'src' in parts:
-                src_idx = parts.index('src')
-                # Get everything after src until the file
-                package_parts = []
-                
-                for i in range(src_idx + 1, len(parts) - 1):
-                    part = parts[i]
-                    # Skip common non-package directories
-                    if part not in ['java', 'kotlin', 'main', 'test', 'androidTest']:
-                        package_parts.append(part)
-                
-                if package_parts:
-                    return '.'.join(package_parts)
-            
-            # Alternative: look for android in path
-            if 'android' in parts:
-                android_idx = parts.index('android')
-                package_parts = parts[android_idx:-1]
-                return '.'.join(package_parts)
-                
-        except (ValueError, IndexError):
-            pass
-        
-        # Last resort: use file's parent directory
-        return file_path.parent.name
-    
-    def save_results(self, output_file: str):
-        """Save extracted test cases to a file."""
-        test_cases = self.extract_all()
-        
-        with open(output_file, 'w') as f:
-            for test_case in test_cases:
-                f.write(f"{test_case}\n")
-        
-        logger.info(f"Results saved to {output_file}")
-        return len(test_cases)
-
-
-class AdvancedTestExtractor(TestCaseExtractor):
-    """Advanced extractor with more flexible patterns."""
-    
-    def _find_java_test_methods(self, content: str) -> List[str]:
-        """Enhanced Java test method detection."""
-        methods = set()
-        
-        # Remove comments to avoid false positives
-        content = self._remove_comments(content)
-        
-        # Pattern 1: Any @*Test* annotation followed by method
-        pattern1 = re.compile(
-            r'@\w*[Tt]est\w*[^{]*?\n\s*(?:public\s+)?(?:protected\s+)?void\s+(\w+)\s*\(',
-            re.DOTALL
-        )
-        methods.update(pattern1.findall(content))
-        
-        # Pattern 2: JUnit 3 style - methods starting with 'test'
-        pattern2 = re.compile(
-            r'(?:public\s+)?void\s+(test\w+)\s*\(',
-            re.MULTILINE
-        )
-        methods.update(pattern2.findall(content))
-        
-        # Pattern 3: Methods with @Test annotation (multiline)
-        lines = content.split('\n')
-        for i, line in enumerate(lines):
-            if '@Test' in line or '@test' in line:
-                # Look at next few lines for method declaration
-                for j in range(i + 1, min(i + 5, len(lines))):
-                    method_match = re.search(r'(?:public\s+)?(?:void|fun)\s+(\w+)\s*\(', lines[j])
-                    if method_match:
-                        methods.add(method_match.group(1))
-                        break
-        
-        return list(methods)
-    
-    def _remove_comments(self, content: str) -> str:
-        """Remove Java/Kotlin comments from content."""
-        # Remove single-line comments
-        content = re.sub(r'//.*?$', '', content, flags=re.MULTILINE)
-        # Remove multi-line comments
-        content = re.sub(r'/\*.*?\*/', '', content, flags=re.DOTALL)
+        content = self.tokenizer.decode(output_ids[index:], skip_special_tokens=True).strip("\n")
         return content
 
 
+# ============================================================================
+# PDF PROCESSING
+# ============================================================================
+
+def extract_text_from_pdf(pdf_path: str) -> str:
+    """Extract text content from a PDF file."""
+    try:
+        with open(pdf_path, 'rb') as file:
+            pdf_reader = PyPDF2.PdfReader(file)
+            text = ""
+            for page in pdf_reader.pages:
+                text += page.extract_text() + "\n"
+        return text
+    except Exception as e:
+        print(f"Error reading {pdf_path}: {e}")
+        return ""
+
+
+def chunk_text(text: str, chunk_size: int = 1000, overlap: int = 200) -> List[str]:
+    """
+    Split text into overlapping chunks.
+    
+    Args:
+        text: Input text to chunk
+        chunk_size: Size of each chunk in characters
+        overlap: Overlap between chunks
+    
+    Returns:
+        List of text chunks
+    """
+    chunks = []
+    start = 0
+    text_length = len(text)
+    
+    while start < text_length:
+        end = start + chunk_size
+        chunk = text[start:end]
+        chunks.append(chunk)
+        start += chunk_size - overlap
+    
+    return chunks
+
+
+# ============================================================================
+# RAG SYSTEM
+# ============================================================================
+
+class RAGSystem:
+    """RAG system for PDF analysis and report generation."""
+    
+    def __init__(self, pdf_folder: str = "pdf"):
+        self.pdf_folder = pdf_folder
+        self.embedding_model = EmbeddingModel()
+        self.inference_model = InferenceModel()
+        self.documents = []
+        self.embeddings = None
+        self.pdf_metadata = []
+    
+    def load_pdfs(self):
+        """Load and process all PDFs in the target folder."""
+        pdf_path = Path(self.pdf_folder)
+        
+        if not pdf_path.exists():
+            print(f"Creating folder: {self.pdf_folder}")
+            pdf_path.mkdir(parents=True, exist_ok=True)
+            print(f"Please add PDF files to the '{self.pdf_folder}' folder and run again.")
+            return
+        
+        pdf_files = list(pdf_path.glob("*.pdf"))
+        
+        if not pdf_files:
+            print(f"No PDF files found in '{self.pdf_folder}' folder.")
+            return
+        
+        print(f"\nFound {len(pdf_files)} PDF file(s). Processing...")
+        
+        for pdf_file in pdf_files:
+            print(f"Processing: {pdf_file.name}")
+            text = extract_text_from_pdf(str(pdf_file))
+            
+            if text:
+                # Chunk the text
+                chunks = chunk_text(text, chunk_size=1500, overlap=300)
+                
+                for i, chunk in enumerate(chunks):
+                    self.documents.append(chunk)
+                    self.pdf_metadata.append({
+                        'filename': pdf_file.name,
+                        'chunk_id': i,
+                        'total_chunks': len(chunks)
+                    })
+        
+        print(f"Loaded {len(self.documents)} text chunks from {len(pdf_files)} PDF(s).")
+    
+    def create_embeddings(self):
+        """Create embeddings for all document chunks."""
+        if not self.documents:
+            print("No documents to embed. Load PDFs first.")
+            return
+        
+        print("\nCreating embeddings for all document chunks...")
+        self.embeddings = self.embedding_model.create_embeddings(self.documents)
+        print(f"Created embeddings with shape: {self.embeddings.shape}")
+    
+    def retrieve_relevant_chunks(self, query: str, top_k: int = 5) -> List[Tuple[str, float, Dict]]:
+        """
+        Retrieve the most relevant document chunks for a query.
+        
+        Args:
+            query: Search query
+            top_k: Number of top results to return
+        
+        Returns:
+            List of (chunk_text, similarity_score, metadata) tuples
+        """
+        if self.embeddings is None:
+            print("No embeddings available. Create embeddings first.")
+            return []
+        
+        # Create query embedding
+        task = "Given a document analysis task, retrieve relevant sections that contain the information"
+        query_embedding = self.embedding_model.create_embeddings([query], task_description=task)
+        
+        # Calculate similarities
+        similarities = (query_embedding @ self.embeddings.T).squeeze(0)
+        
+        # Get top-k indices
+        top_k_indices = torch.topk(similarities, min(top_k, len(similarities))).indices.tolist()
+        
+        # Return results
+        results = []
+        for idx in top_k_indices:
+            results.append((
+                self.documents[idx],
+                similarities[idx].item(),
+                self.pdf_metadata[idx]
+            ))
+        
+        return results
+    
+    def generate_comprehensive_report(self, top_k_per_topic: int = 10):
+        """
+        Generate a comprehensive report analyzing all PDFs for unique topics and events.
+        
+        Args:
+            top_k_per_topic: Number of chunks to retrieve per analysis
+        """
+        if not self.documents:
+            print("No documents loaded. Please add PDFs and try again.")
+            return
+        
+        print("\n" + "="*80)
+        print("GENERATING COMPREHENSIVE REPORT")
+        print("="*80)
+        
+        # First pass: Identify main topics across all documents
+        print("\nStep 1: Identifying main topics and sections...")
+        
+        topic_query = "Identify the main topics, sections, themes, and subject areas discussed"
+        relevant_chunks = self.retrieve_relevant_chunks(topic_query, top_k=top_k_per_topic)
+        
+        context = "\n\n".join([f"[From {meta['filename']}, chunk {meta['chunk_id']+1}/{meta['total_chunks']}]\n{chunk}" 
+                               for chunk, _, meta in relevant_chunks])
+        
+        topic_prompt = f"""Based on the following excerpts from multiple PDF documents, identify and list all the main topics, sections, or themes discussed:
+
+{context}
+
+Please provide a comprehensive list of all major topics and themes you can identify."""
+        
+        topics_response = self.inference_model.generate_response(topic_prompt, max_tokens=2048)
+        print("\nIdentified Topics:")
+        print(topics_response)
+        
+        # Second pass: For each identified topic, gather unique information
+        print("\n" + "-"*80)
+        print("Step 2: Analyzing each topic for unique information and events...")
+        print("-"*80)
+        
+        # Retrieve more chunks for comprehensive analysis
+        analysis_chunks = self.retrieve_relevant_chunks(
+            "all unique information, events, findings, and details", 
+            top_k=min(20, len(self.documents))
+        )
+        
+        full_context = "\n\n".join([
+            f"[Document: {meta['filename']}, Section {meta['chunk_id']+1}/{meta['total_chunks']}]\n{chunk}" 
+            for chunk, _, meta in analysis_chunks
+        ])
+        
+        final_prompt = f"""You are analyzing multiple PDF documents. Based on the content below, create a comprehensive report that:
+
+1. Organizes information by topic/section
+2. Lists all unique events, findings, or information under each topic
+3. Avoids repetition - only mention each unique piece of information once
+4. Uses clear headings and structure
+5. Cites which document each piece of information comes from
+
+Previously identified topics:
+{topics_response}
+
+Document Content:
+{full_context}
+
+Please create a well-organized report in the following format:
+
+# COMPREHENSIVE ANALYSIS REPORT
+
+## Topic/Section 1: [Name]
+- Unique finding/event 1 (Source: filename.pdf)
+- Unique finding/event 2 (Source: filename.pdf)
+...
+
+## Topic/Section 2: [Name]
+- Unique finding/event 1 (Source: filename.pdf)
+...
+
+Continue for all identified topics. Be thorough and include all unique information."""
+        
+        print("\nGenerating final report...\n")
+        final_report = self.inference_model.generate_response(final_prompt, max_tokens=8192)
+        
+        print("\n" + "="*80)
+        print("FINAL REPORT")
+        print("="*80 + "\n")
+        print(final_report)
+        
+        # Save report to file
+        output_file = "rag_analysis_report.txt"
+        with open(output_file, 'w', encoding='utf-8') as f:
+            f.write("="*80 + "\n")
+            f.write("RAG-BASED PDF ANALYSIS REPORT\n")
+            f.write("="*80 + "\n\n")
+            f.write(f"Analyzed {len(set([m['filename'] for m in self.pdf_metadata]))} PDF file(s)\n")
+            f.write(f"Total chunks processed: {len(self.documents)}\n\n")
+            f.write("-"*80 + "\n\n")
+            f.write(final_report)
+        
+        print(f"\n\nReport saved to: {output_file}")
+
+
+# ============================================================================
+# MAIN EXECUTION
+# ============================================================================
+
 def main():
-    """Main entry point."""
-    parser = argparse.ArgumentParser(
-        description='Extract test case names from Android CTS source code'
-    )
-    parser.add_argument(
-        'cts_path',
-        help='Path to the CTS source code directory'
-    )
-    parser.add_argument(
-        '-o', '--output',
-        default='testcases.txt',
-        help='Output file for test case names (default: testcases.txt)'
-    )
-    parser.add_argument(
-        '-v', '--verbose',
-        action='store_true',
-        help='Enable verbose logging'
-    )
-    parser.add_argument(
-        '--advanced',
-        action='store_true',
-        help='Use advanced extraction patterns'
-    )
+    """Main execution function."""
+    print("="*80)
+    print("RAG-BASED PDF ANALYSIS SYSTEM")
+    print("="*80)
     
-    args = parser.parse_args()
+    # Initialize RAG system
+    rag_system = RAGSystem(pdf_folder="pdf")
     
-    if args.verbose:
-        logger.setLevel(logging.DEBUG)
+    # Load PDFs
+    rag_system.load_pdfs()
     
-    # Choose extractor
-    if args.advanced:
-        extractor = AdvancedTestExtractor(args.cts_path)
-        logger.info("Using advanced extraction mode")
-    else:
-        extractor = TestCaseExtractor(args.cts_path)
+    if not rag_system.documents:
+        print("\nNo documents to process. Exiting.")
+        return
     
-    # Extract and save
-    count = extractor.save_results(args.output)
+    # Create embeddings
+    rag_system.create_embeddings()
     
-    print(f"\n{'='*60}")
-    print(f"Extraction Complete!")
-    print(f"Total test cases found: {count}")
-    print(f"Results saved to: {args.output}")
-    print(f"{'='*60}")
+    # Generate comprehensive report
+    rag_system.generate_comprehensive_report(top_k_per_topic=15)
+    
+    print("\n" + "="*80)
+    print("ANALYSIS COMPLETE")
+    print("="*80)
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()
+```
+
+**Installation Requirements:**
+
+Create a `requirements.txt` file:
+
+```txt
+torch>=2.0.0
+transformers>=4.51.0
+PyPDF2>=3.0.0
+numpy>=1.24.0
+```
+
+Install with:
+```bash
+pip install -r requirements.txt
+```
+
+**Key Features:**
+
+1. **Separate Models**: Uses Qwen3-Embedding-0.6B for embeddings and Qwen3-1.7B for inference
+2. **RAG Architecture**: Retrieves relevant document chunks before generating responses
+3. **PDF Processing**: Automatically extracts and chunks text from all PDFs in the "pdf" folder
+4. **Organized Reports**: Generates structured reports with topics and unique findings
+5. **Source Attribution**: Tracks which PDF each piece of information comes from
+6. **Overlap Chunking**: Uses overlapping chunks to preserve context
+7. **Similarity Search**: Finds most relevant document sections using cosine similarity
+8. **Report Export**: Saves the final report to a text file
+
+**Usage:**
+
+1. Place your PDF files in a folder named `pdf` in the same directory as the script
+2. Run: `python script_name.py`
+3. The script will generate a comprehensive report in `rag_analysis_report.txt`
+
+The script handles all the embedding creation, similarity search, and report generation automatically!
