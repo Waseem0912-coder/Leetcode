@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
 """
-Optimized RAG Pipeline for Qwen3-Next-80B-A3B-Instruct
-- Uses Qwen3-Embedding-8B for embeddings
-- Uses Qwen3-Next-80B for extraction with proper chat templates
+Fixed RAG Pipeline for Qwen3-Next-80B-A3B-Instruct
+- Properly handles Qwen3-Embedding-8B with 4096 dimensions
+- Recreates vector store if dimension mismatch detected
 - Multi-GPU support with automatic device mapping
-- Clean JSON-based extraction
 """
 import os
 import json
 import re
+import shutil
 import torch
 import torch.nn.functional as F
 from typing import List, Dict, Any, Optional
@@ -43,7 +43,7 @@ logger = logging.getLogger(__name__)
 
 
 class CustomQwenEmbeddings(Embeddings):
-    """Custom embedding class for Qwen3-Embedding-8B model."""
+    """Custom embedding class for Qwen3-Embedding-8B model (4096 dimensions)."""
     
     def __init__(self, model_name: str = "Qwen/Qwen3-Embedding-8B", device: str = None, use_flash_attention: bool = False):
         """Initialize the Qwen3-Embedding-8B model.
@@ -54,6 +54,7 @@ class CustomQwenEmbeddings(Embeddings):
             use_flash_attention: Whether to use flash_attention_2 (requires installation)
         """
         self.device = device or ('cuda' if torch.cuda.is_available() else 'cpu')
+        self.model_name = model_name
         logger.info(f"Loading embedding model: {model_name}")
         
         # Check available GPUs
@@ -93,7 +94,18 @@ class CustomQwenEmbeddings(Embeddings):
         # Maximum sequence length for Qwen3-Embedding-8B
         self.max_length = 8192
         
-        logger.info(f"Embedding model loaded successfully with max_length={self.max_length}")
+        # Get embedding dimension
+        with torch.no_grad():
+            test_input = self.tokenizer(["test"], padding=True, truncation=True, 
+                                       max_length=self.max_length, return_tensors="pt")
+            test_input = {k: v.to(self.model.device) for k, v in test_input.items()}
+            test_output = self.model(**test_input)
+            test_emb = self.last_token_pool(test_output.last_hidden_state, test_input['attention_mask'])
+            self.embedding_dim = test_emb.shape[1]
+        
+        logger.info(f"Embedding model loaded successfully")
+        logger.info(f"Embedding dimension: {self.embedding_dim}")
+        logger.info(f"Max sequence length: {self.max_length}")
     
     @staticmethod
     def last_token_pool(last_hidden_states: torch.Tensor, attention_mask: torch.Tensor) -> torch.Tensor:
@@ -249,6 +261,9 @@ class Qwen3NextLLM:
         device = next(self.model.parameters()).device
         model_inputs = {k: v.to(device) for k, v in model_inputs.items()}
         
+        # Store input length for later (before passing dict to generate)
+        input_length = model_inputs['input_ids'].shape[1]
+        
         # Generate
         with torch.no_grad():
             generated_ids = self.model.generate(
@@ -262,8 +277,8 @@ class Qwen3NextLLM:
                 eos_token_id=self.tokenizer.eos_token_id,
             )
         
-        # Decode only the generated part
-        output_ids = generated_ids[0][len(model_inputs.input_ids[0]):].tolist()
+        # Decode only the generated part (skip the input prompt)
+        output_ids = generated_ids[0][input_length:].tolist()
         content = self.tokenizer.decode(output_ids, skip_special_tokens=True)
         
         return content.strip()
@@ -310,8 +325,34 @@ class RAGPipeline:
         )
         logger.info("Embeddings setup complete")
     
-    def ingest_and_index_documents(self):
-        """Load, chunk, and index all PDF documents."""
+    def _check_vector_store_compatibility(self) -> bool:
+        """Check if existing vector store is compatible with current embeddings."""
+        if not os.path.exists(self.persist_dir):
+            return True  # No existing store
+        
+        try:
+            # Try to load existing vector store
+            test_store = Chroma(
+                persist_directory=self.persist_dir,
+                embedding_function=self.embeddings
+            )
+            
+            # Try a simple query to check compatibility
+            test_store.similarity_search("test", k=1)
+            logger.info("Existing vector store is compatible")
+            return True
+        
+        except Exception as e:
+            logger.warning(f"Vector store compatibility check failed: {e}")
+            logger.warning("This usually means dimension mismatch between old and new embeddings")
+            return False
+    
+    def ingest_and_index_documents(self, force_recreate: bool = False):
+        """Load, chunk, and index all PDF documents.
+        
+        Args:
+            force_recreate: Force recreation of vector store even if it exists
+        """
         logger.info(f"Loading PDFs from {self.source_dir}...")
         
         if not os.path.exists(self.source_dir):
@@ -329,25 +370,44 @@ class RAGPipeline:
         
         logger.info(f"Loaded {len(documents)} pages from PDFs")
         
-        # Optimal chunking for large models
-        text_splitter = RecursiveCharacterTextSplitter(
-            chunk_size=1000,
-            chunk_overlap=200,
-            length_function=len,
-            separators=["\n\n", "\n", ". ", " ", ""]
-        )
+        # Check if we need to recreate vector store
+        needs_recreation = force_recreate or not self._check_vector_store_compatibility()
         
-        chunks = text_splitter.split_documents(documents)
-        logger.info(f"Created {len(chunks)} chunks from documents")
+        if needs_recreation:
+            if os.path.exists(self.persist_dir):
+                logger.warning(f"Removing incompatible vector store at {self.persist_dir}")
+                logger.warning("This is normal when switching between different embedding models")
+                shutil.rmtree(self.persist_dir)
+            
+            logger.info("Creating new vector store...")
+            
+            # Optimal chunking for large models
+            text_splitter = RecursiveCharacterTextSplitter(
+                chunk_size=1000,
+                chunk_overlap=200,
+                length_function=len,
+                separators=["\n\n", "\n", ". ", " ", ""]
+            )
+            
+            chunks = text_splitter.split_documents(documents)
+            logger.info(f"Created {len(chunks)} chunks from documents")
+            
+            logger.info(f"Creating vector store with {self.embeddings.embedding_dim}-dimensional embeddings...")
+            self.vector_store = Chroma.from_documents(
+                documents=chunks,
+                embedding=self.embeddings,
+                persist_directory=self.persist_dir
+            )
+            
+            logger.info("Document indexing complete")
+        else:
+            logger.info("Loading existing compatible vector store...")
+            self.vector_store = Chroma(
+                persist_directory=self.persist_dir,
+                embedding_function=self.embeddings
+            )
+            logger.info("Vector store loaded successfully")
         
-        logger.info("Creating vector store...")
-        self.vector_store = Chroma.from_documents(
-            documents=chunks,
-            embedding=self.embeddings,
-            persist_directory=self.persist_dir
-        )
-        
-        logger.info("Document indexing complete")
         return True
     
     def discover_topics(self, sample_size: int = 50) -> List[str]:
@@ -592,7 +652,7 @@ JSON array:"""
         doc.add_page_break()
         doc.add_heading("Report Metadata", 2)
         doc.add_paragraph(f"Generated using RAG pipeline")
-        doc.add_paragraph(f"Embedding Model: Qwen3-Embedding-8B")
+        doc.add_paragraph(f"Embedding Model: Qwen3-Embedding-8B ({self.embeddings.embedding_dim} dimensions)")
         doc.add_paragraph(f"Language Model: Qwen3-Next-80B-A3B-Instruct")
         doc.add_paragraph(f"Total topics processed: {len(compiled_data)}")
         doc.add_paragraph(f"Total unique updates: {total_updates}")
@@ -600,11 +660,12 @@ JSON array:"""
         doc.save(output_file)
         logger.info(f"Report saved to {output_file}")
     
-    def run_pipeline(self, use_flash_attention: bool = False):
+    def run_pipeline(self, use_flash_attention: bool = False, force_recreate_vectorstore: bool = False):
         """Execute the complete RAG pipeline.
         
         Args:
             use_flash_attention: Enable flash_attention_2 for embeddings (requires flash-attn package)
+            force_recreate_vectorstore: Force recreation of vector store even if it exists
         """
         logger.info("Starting RAG pipeline execution...")
         
@@ -612,8 +673,8 @@ JSON array:"""
         self.setup_embeddings(use_flash_attention=use_flash_attention)
         self.setup_llm()
         
-        # Ingest documents
-        if not self.ingest_and_index_documents():
+        # Ingest documents (will handle dimension mismatch automatically)
+        if not self.ingest_and_index_documents(force_recreate=force_recreate_vectorstore):
             logger.error("No documents to process. Exiting.")
             return
         
@@ -642,7 +703,7 @@ JSON array:"""
         print("\n" + "="*60)
         print("PIPELINE EXECUTION SUMMARY")
         print("="*60)
-        print(f"Embedding Model: Qwen3-Embedding-8B")
+        print(f"Embedding Model: Qwen3-Embedding-8B ({self.embeddings.embedding_dim}D)")
         print(f"Language Model: Qwen3-Next-80B-A3B-Instruct")
         print(f"Topics discovered: {len(topics)}")
         for topic, updates in compiled_data.items():
@@ -683,7 +744,8 @@ def main():
     pipeline = RAGPipeline(source_dir=source_dir)
     
     try:
-        pipeline.run_pipeline()
+        # Run pipeline (will auto-detect and fix dimension mismatch)
+        pipeline.run_pipeline(use_flash_attention=False, force_recreate_vectorstore=False)
     except Exception as e:
         logger.error(f"Pipeline execution failed: {e}")
         raise
