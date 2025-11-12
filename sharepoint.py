@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """
 auto_report_compatible.py - Multi-Pass RAG Pipeline with LangChain version compatibility
 
