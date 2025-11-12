@@ -1,15 +1,8 @@
 #!/usr/bin/env python3
 """
-auto_report.py - Multi-Pass RAG Pipeline for PDF Processing and Report Generation
+auto_report_compatible.py - Multi-Pass RAG Pipeline with LangChain version compatibility
 
-This script processes a directory of PDF files, extracts information organized by topics,
-and generates a consolidated .docx report using Qwen3 models with specific loading techniques.
-
-Key Features:
-- Dynamic topic discovery across all documents
-- Topic-based information extraction and consolidation
-- Deduplication of semantically similar content
-- Structured report generation in DOCX format
+This version handles different LangChain module structures for better compatibility.
 """
 
 import os
@@ -21,9 +14,45 @@ from pathlib import Path
 import logging
 from tqdm import tqdm
 
-# LangChain imports
+# LangChain imports with compatibility handling
 from langchain_community.document_loaders import PyPDFDirectoryLoader
-from langchain.text_splitter import RecursiveCharacterTextSplitter
+
+# Try different import paths for text splitter
+try:
+    from langchain_text_splitters import RecursiveCharacterTextSplitter
+    print("Using langchain_text_splitters (newer version)")
+except ImportError:
+    try:
+        from langchain.text_splitter import RecursiveCharacterTextSplitter
+        print("Using langchain.text_splitter (older version)")
+    except ImportError:
+        # Fallback to the most common path
+        from langchain.schema import Document
+        from typing import List
+        
+        # Simple fallback splitter if neither import works
+        class RecursiveCharacterTextSplitter:
+            def __init__(self, chunk_size=1000, chunk_overlap=200, **kwargs):
+                self.chunk_size = chunk_size
+                self.chunk_overlap = chunk_overlap
+            
+            def split_documents(self, documents: List[Document]) -> List[Document]:
+                """Simple text splitter fallback."""
+                chunks = []
+                for doc in documents:
+                    text = doc.page_content
+                    # Simple chunking
+                    for i in range(0, len(text), self.chunk_size - self.chunk_overlap):
+                        chunk_text = text[i:i + self.chunk_size]
+                        chunk_doc = Document(
+                            page_content=chunk_text,
+                            metadata=doc.metadata
+                        )
+                        chunks.append(chunk_doc)
+                return chunks
+        
+        print("Using fallback text splitter")
+
 from langchain_community.vectorstores import Chroma
 from langchain.chains import LLMChain
 from langchain.prompts import PromptTemplate
@@ -543,7 +572,7 @@ Consolidated updates:"""
         
         # Add executive summary
         doc.add_heading("Executive Summary", 1)
-        summary = f"This report consolidates information from {len(self.vector_store.get()['ids'])} document chunks across {len(compiled_data)} main topics."
+        summary = f"This report consolidates information from multiple PDF documents across {len(compiled_data)} main topics."
         doc.add_paragraph(summary)
         
         # Add a line break
