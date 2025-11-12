@@ -6,19 +6,19 @@ auto_report.py
 --------------
 RAG pipeline + optional strict parsing mode.
 
-Key update: "Evidence-guarded" extraction (default ON)
+Key feature: "Evidence-guarded" extraction (default ON)
 - LLM must return [{"bullet": "...", "evidence": ["<verbatim-from-context>", ...]}, ...]
-- We verify each bullet's evidence is present in the exact context; unsupported bullets are dropped.
-- Paraphrase is OK, hallucination is not.
-- Deterministic semantic dedup via Qwen embeddings (no LLM rewriting).
+- We verify each bullet's evidence appears in the context; unsupported bullets are dropped.
+- Paraphrase OK, hallucination not OK.
+- Deterministic semantic dedup via Qwen embeddings (cosine).
 
 Usage:
   python auto_report.py --source ./source_pdfs --out Consolidated_Report.docx
   python auto_report.py --use-fixed-topics --topics "Budget, Risks"
   python auto_report.py --allow-unguarded    # disable evidence guard (not recommended)
 
-Also includes:
-  --strict-updates-mode  # deterministic Topic/Update regex parsing (no LLM)
+Strict deterministic mode (no LLM):
+  --strict-updates-mode  # regex parse Topic/Update lines and merge verbatim
 """
 
 import os
@@ -28,7 +28,7 @@ import json
 import argparse
 import random
 import warnings
-from typing import List, Dict, Any, Optional, Iterable, Tuple
+from typing import List, Dict, Any, Optional, Iterable
 
 import torch
 import torch.nn.functional as F
@@ -172,12 +172,11 @@ class CustomQwenEmbeddings(Embeddings):
 def build_qwen_generator_4bit(
     model_name: str = "Qwen/Qwen3-1.7B",
     max_new_tokens: int = 384,
-    temperature: float = 0.0,   # guardrail: deterministic
+    temperature: float = 0.0,   # deterministic
     top_p: float = 1.0,
     device_map: str = "auto",
 ) -> HuggingFacePipeline:
-    # requires bitsandbytes
-    _ = BitsAndBytesConfig  # raises if not importable
+    _ = BitsAndBytesConfig  # ensure imported
     bnb_config = BitsAndBytesConfig(
         load_in_4bit=True,
         bnb_4bit_quant_type="nf4",
@@ -380,7 +379,7 @@ def robust_retrieve_for_topic(
 
 
 # =========================
-# STRICT MODE parsing helpers
+# STRICT MODE parsing helpers (no LLM)
 # =========================
 
 def _dedupe_preserve_order(items: List[str]) -> List[str]:
@@ -546,7 +545,7 @@ def main(args: argparse.Namespace) -> None:
     llm = build_qwen_generator_4bit(
         model_name="Qwen/Qwen3-1.7B",
         max_new_tokens=384,
-        temperature=0.0 if not args.temperature else float(args.temperature),
+        temperature=0.0 if args.temperature is None else float(args.temperature),
         top_p=1.0,
     )
     retriever = vectorstore.as_retriever(search_kwargs={"k": 12})
@@ -608,7 +607,7 @@ def main(args: argparse.Namespace) -> None:
             "- 'bullet': a short standalone paraphrase grounded in the context\n"
             "- 'evidence': a list of 1–3 short quotes COPIED VERBATIM from the context that justify the bullet\n\n"
             "Example:\n"
-            "[{\"bullet\": \"Budget increased by 10% in Q4.\", \"evidence\": [\"budget increased by 10% in Q4\"]}]\n"
+            "[{{\"bullet\": \"Budget increased by 10% in Q4.\", \"evidence\": [\"budget increased by 10% in Q4\"]}}]\n"
         )
     )
 
@@ -664,13 +663,10 @@ def main(args: argparse.Namespace) -> None:
             ev = obj.get("evidence") or []
             if not bullet:
                 continue
-            # verify at least one evidence quote appears in context
             if evidence_supported(ctx, ev):
                 kept.append(bullet)
 
-        # deterministic semantic dedup (no LLM rewriting)
         kept = semantic_dedupe(kept, embeddings, threshold=0.92)
-
         compiled_data[topic] = kept
         print(f"[Topic] {topic} -> docs={len(retrieved_docs)}, bullets_kept={len(kept)}")
 
