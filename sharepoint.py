@@ -10,8 +10,7 @@ import torch
 import torch.nn.functional as F
 from docx import Document
 
-# --- MODIFIED IMPORT: Use the new, recommended package for Chroma ---
-from langchain_chroma import Chroma 
+from langchain_chroma import Chroma
 from langchain_community.document_loaders import PyPDFDirectoryLoader
 from langchain_core.embeddings import Embeddings
 from langchain_core.output_parsers import JsonOutputParser
@@ -198,7 +197,8 @@ def generate_dynamic_topics(vector_store: Chroma, llm: HuggingFacePipeline) -> L
     logging.info("--- Step 4: Dynamic Topic Generation (Pass 1) ---")
     retriever = vector_store.as_retriever(search_kwargs={"k": 20})
     
-    sample_docs = retriever.get_relevant_documents("What are the main subjects, themes, and topics in these documents?")
+    # --- MODIFIED: Changed .get_relevant_documents() to .invoke() ---
+    sample_docs = retriever.invoke("What are the main subjects, themes, and topics in these documents?")
     context_text = "\n\n".join([doc.page_content for doc in sample_docs])
 
     prompt_template = """<|system|>
@@ -253,7 +253,8 @@ Based ONLY on the context provided above, extract all key bullet points, facts, 
     for i, topic in enumerate(topics):
         logging.info(f"Processing topic {i+1}/{len(topics)}: '{topic}'")
         
-        retrieved_docs = retriever.get_relevant_documents(topic)
+        # --- MODIFIED: Changed .get_relevant_documents() to .invoke() ---
+        retrieved_docs = retriever.invoke(topic)
         context = "\n\n".join([doc.page_content for doc in retrieved_docs])
 
         try:
