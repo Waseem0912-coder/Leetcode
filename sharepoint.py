@@ -219,6 +219,8 @@ Example: ["Project Budget Analysis", "Security Protocol Review", "Quarterly Perf
         logging.error(f"Failed to generate topics: {e}. Using fallback topics.")
         return ["General Analysis", "Key Findings", "Recommendations"]
 
+import torch # Add this import at the top of your script
+
 def process_topics_and_extract_data(topics: List[str], vector_store: Chroma, llm: HuggingFacePipeline) -> dict:
     """Step 5: Loops through topics, retrieves relevant context, and extracts key points."""
     logging.info("--- Step 5: Topic-Based Extraction Loop (Pass 2 & 3) ---")
@@ -239,13 +241,11 @@ Topic: "{topic}"
 Based ONLY on the context provided above, extract all key bullet points, facts, and data points related to the topic.<|assistant|>
 """
     extraction_prompt = PromptTemplate(template=extraction_prompt_template, input_variables=["context", "topic"])
-    # --- FIXED: Uses the corrected clean_llm_output function ---
     extraction_chain = extraction_prompt | llm | RunnableLambda(clean_llm_output) | JsonOutputParser()
 
     for i, topic in enumerate(topics):
         logging.info(f"Processing topic {i+1}/{len(topics)}: '{topic}'")
         
-        # --- FIXED: Ensures .invoke() is used ---
         retrieved_docs = retriever.invoke(topic)
         context = "\n\n".join([doc.page_content for doc in retrieved_docs])
 
@@ -257,6 +257,10 @@ Based ONLY on the context provided above, extract all key bullet points, facts, 
         except Exception as e:
             logging.error(f"An error occurred during extraction for topic '{topic}': {e}")
             extracted_points = []
+        finally:
+            # Explicitly clear CUDA cache to prevent memory leaks in the loop
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
 
         unique_points = sorted(list(set(point.strip() for point in extracted_points if isinstance(point, str) and point.strip())))
         
