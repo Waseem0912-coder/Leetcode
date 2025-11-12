@@ -38,22 +38,12 @@ if DEVICE == "cpu":
 
 # --- Helper Function for Cleaning LLM Output ---
 def clean_llm_output(text: str) -> str:
-    """Uses regex to remove <think>...</think> blocks and trims whitespace."""
+    """
+    Uses regex to remove <think>...</think> blocks and trims whitespace.
+    The JsonOutputParser will handle extracting the actual JSON.
+    """
+    # Remove the <think> blocks, as they can confuse the JSON parser
     cleaned_text = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL)
-    json_start = cleaned_text.find('[')
-    if json_start == -1:
-        json_start = cleaned_text.find('{')
-    
-    if json_start != -1:
-        json_end = -1
-        if cleaned_text[json_start] == '[':
-            json_end = cleaned_text.rfind(']')
-        else:
-            json_end = cleaned_text.rfind('}')
-            
-        if json_end > json_start:
-            return cleaned_text[json_start : json_end + 1].strip()
-
     return cleaned_text.strip()
 
 # --- Step 1: Custom Qwen3 Embedding Class (No changes here) ---
@@ -197,7 +187,7 @@ def generate_dynamic_topics(vector_store: Chroma, llm: HuggingFacePipeline) -> L
     logging.info("--- Step 4: Dynamic Topic Generation (Pass 1) ---")
     retriever = vector_store.as_retriever(search_kwargs={"k": 20})
     
-    # --- MODIFIED: Changed .get_relevant_documents() to .invoke() ---
+    # --- FIXED: Ensures .invoke() is used ---
     sample_docs = retriever.invoke("What are the main subjects, themes, and topics in these documents?")
     context_text = "\n\n".join([doc.page_content for doc in sample_docs])
 
@@ -215,6 +205,7 @@ Example: ["Project Budget Analysis", "Security Protocol Review", "Quarterly Perf
 """
     
     prompt = PromptTemplate(template=prompt_template, input_variables=["context"])
+    # --- FIXED: Uses the corrected clean_llm_output function ---
     topic_chain = prompt | llm | RunnableLambda(clean_llm_output) | JsonOutputParser()
 
     logging.info("Invoking LLM to generate topics...")
@@ -248,12 +239,13 @@ Topic: "{topic}"
 Based ONLY on the context provided above, extract all key bullet points, facts, and data points related to the topic.<|assistant|>
 """
     extraction_prompt = PromptTemplate(template=extraction_prompt_template, input_variables=["context", "topic"])
+    # --- FIXED: Uses the corrected clean_llm_output function ---
     extraction_chain = extraction_prompt | llm | RunnableLambda(clean_llm_output) | JsonOutputParser()
 
     for i, topic in enumerate(topics):
         logging.info(f"Processing topic {i+1}/{len(topics)}: '{topic}'")
         
-        # --- MODIFIED: Changed .get_relevant_documents() to .invoke() ---
+        # --- FIXED: Ensures .invoke() is used ---
         retrieved_docs = retriever.invoke(topic)
         context = "\n\n".join([doc.page_content for doc in retrieved_docs])
 
@@ -293,6 +285,7 @@ def generate_docx_report(data: dict, filename: str):
                 doc.add_paragraph("No specific bullet points were extracted for this topic.")
             else:
                 for point in points:
+                    # Clean any lingering <think> tags just in case
                     clean_point = re.sub(r"<think>.*?</think>", "", point, flags=re.DOTALL).strip()
                     if clean_point:
                         doc.add_paragraph(clean_point, style='List Bullet')
