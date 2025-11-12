@@ -45,8 +45,14 @@ logger = logging.getLogger(__name__)
 class CustomQwenEmbeddings(Embeddings):
     """Custom embedding class for Qwen3-Embedding-8B model."""
     
-    def __init__(self, model_name: str = "Qwen/Qwen3-Embedding-8B", device: str = None):
-        """Initialize the Qwen3-Embedding-8B model."""
+    def __init__(self, model_name: str = "Qwen/Qwen3-Embedding-8B", device: str = None, use_flash_attention: bool = False):
+        """Initialize the Qwen3-Embedding-8B model.
+        
+        Args:
+            model_name: Model name or path
+            device: Device to use (auto-detected if None)
+            use_flash_attention: Whether to use flash_attention_2 (requires installation)
+        """
         self.device = device or ('cuda' if torch.cuda.is_available() else 'cpu')
         logger.info(f"Loading embedding model: {model_name}")
         
@@ -59,25 +65,35 @@ class CustomQwenEmbeddings(Embeddings):
                 gpu_mem = torch.cuda.get_device_properties(i).total_memory / 1e9
                 logger.info(f"  GPU {i}: {gpu_name} ({gpu_mem:.1f} GB)")
         
+        # CRITICAL: Use left padding for Qwen3-Embedding-8B
         self.tokenizer = AutoTokenizer.from_pretrained(
             model_name,
+            padding_side='left',  # Left padding as per official implementation
             trust_remote_code=True
         )
         
-        # Load with automatic device mapping for multi-GPU
-        self.model = AutoModel.from_pretrained(
-            model_name,
-            trust_remote_code=True,
-            torch_dtype=torch.float16 if self.device == 'cuda' else torch.float32,
-            device_map="auto"  # Automatic multi-GPU distribution
-        )
+        # Load model with optional flash attention
+        model_kwargs = {
+            'trust_remote_code': True,
+            'device_map': 'auto',  # Automatic multi-GPU distribution
+        }
         
+        if use_flash_attention and self.device == 'cuda':
+            logger.info("Enabling flash_attention_2 for better performance")
+            model_kwargs['attn_implementation'] = 'flash_attention_2'
+            model_kwargs['torch_dtype'] = torch.float16
+        elif self.device == 'cuda':
+            model_kwargs['torch_dtype'] = torch.float16
+        else:
+            model_kwargs['torch_dtype'] = torch.float32
+        
+        self.model = AutoModel.from_pretrained(model_name, **model_kwargs)
         self.model.eval()
         
-        if self.tokenizer.pad_token is None:
-            self.tokenizer.pad_token = self.tokenizer.eos_token
+        # Maximum sequence length for Qwen3-Embedding-8B
+        self.max_length = 8192
         
-        logger.info(f"Embedding model loaded successfully")
+        logger.info(f"Embedding model loaded successfully with max_length={self.max_length}")
     
     @staticmethod
     def last_token_pool(last_hidden_states: torch.Tensor, attention_mask: torch.Tensor) -> torch.Tensor:
@@ -93,10 +109,10 @@ class CustomQwenEmbeddings(Embeddings):
     @staticmethod
     def get_detailed_instruct(task_description: str, query: str) -> str:
         """Format the query with task-specific instructions."""
-        return f'Instruct: {task_description}\nQuery: {query}'
+        return f'Instruct: {task_description}\nQuery:{query}'
     
     def embed_documents(self, texts: List[str]) -> List[List[float]]:
-        """Embed a list of documents."""
+        """Embed a list of documents (no instruction prefix for documents)."""
         if not texts:
             return []
         
@@ -105,52 +121,64 @@ class CustomQwenEmbeddings(Embeddings):
         
         for i in range(0, len(texts), batch_size):
             batch_texts = texts[i:i + batch_size]
-            inputs = self.tokenizer(
+            
+            # Tokenize with proper settings
+            batch_dict = self.tokenizer(
                 batch_texts,
                 padding=True,
                 truncation=True,
-                max_length=512,
+                max_length=self.max_length,
                 return_tensors="pt"
             )
             
-            # Move to appropriate device (handled by device_map="auto")
-            inputs = {k: v.to(self.model.device) for k, v in inputs.items()}
+            # Move to device
+            batch_dict = {k: v.to(self.model.device) for k, v in batch_dict.items()}
             
+            # Get embeddings
             with torch.no_grad():
-                outputs = self.model(**inputs)
+                outputs = self.model(**batch_dict)
             
+            # Apply last token pooling
             batch_embeddings = self.last_token_pool(
                 outputs.last_hidden_state,
-                inputs['attention_mask']
+                batch_dict['attention_mask']
             )
+            
+            # Normalize embeddings
             batch_embeddings = F.normalize(batch_embeddings, p=2, dim=1)
             embeddings.extend(batch_embeddings.cpu().numpy().tolist())
         
         return embeddings
     
     def embed_query(self, text: str) -> List[float]:
-        """Embed a single query text."""
+        """Embed a single query text with instruction prefix."""
+        # Add instruction for queries (not for documents)
         task_description = 'Given a web search query, retrieve relevant passages that answer the query'
         formatted_query = self.get_detailed_instruct(task_description, text)
         
-        inputs = self.tokenizer(
-            formatted_query,
+        # Tokenize
+        batch_dict = self.tokenizer(
+            [formatted_query],
             padding=True,
             truncation=True,
-            max_length=512,
+            max_length=self.max_length,
             return_tensors="pt"
         )
         
-        # Move to appropriate device
-        inputs = {k: v.to(self.model.device) for k, v in inputs.items()}
+        # Move to device
+        batch_dict = {k: v.to(self.model.device) for k, v in batch_dict.items()}
         
+        # Get embedding
         with torch.no_grad():
-            outputs = self.model(**inputs)
+            outputs = self.model(**batch_dict)
         
+        # Apply last token pooling
         embedding = self.last_token_pool(
             outputs.last_hidden_state,
-            inputs['attention_mask']
+            batch_dict['attention_mask']
         )
+        
+        # Normalize
         embedding = F.normalize(embedding, p=2, dim=1)
         
         return embedding[0].cpu().numpy().tolist()
@@ -269,10 +297,17 @@ class RAGPipeline:
         self.llm = Qwen3NextLLM(model_name="Qwen/Qwen3-Next-80B-A3B-Instruct")
         logger.info("LLM setup complete")
     
-    def setup_embeddings(self):
-        """Initialize the Qwen3-Embedding-8B model."""
+    def setup_embeddings(self, use_flash_attention: bool = False):
+        """Initialize the Qwen3-Embedding-8B model.
+        
+        Args:
+            use_flash_attention: Enable flash_attention_2 for better performance (requires flash-attn package)
+        """
         logger.info("Setting up Qwen3-Embedding-8B...")
-        self.embeddings = CustomQwenEmbeddings(model_name="Qwen/Qwen3-Embedding-8B")
+        self.embeddings = CustomQwenEmbeddings(
+            model_name="Qwen/Qwen3-Embedding-8B",
+            use_flash_attention=use_flash_attention
+        )
         logger.info("Embeddings setup complete")
     
     def ingest_and_index_documents(self):
@@ -565,12 +600,16 @@ JSON array:"""
         doc.save(output_file)
         logger.info(f"Report saved to {output_file}")
     
-    def run_pipeline(self):
-        """Execute the complete RAG pipeline."""
+    def run_pipeline(self, use_flash_attention: bool = False):
+        """Execute the complete RAG pipeline.
+        
+        Args:
+            use_flash_attention: Enable flash_attention_2 for embeddings (requires flash-attn package)
+        """
         logger.info("Starting RAG pipeline execution...")
         
         # Setup models
-        self.setup_embeddings()
+        self.setup_embeddings(use_flash_attention=use_flash_attention)
         self.setup_llm()
         
         # Ingest documents
