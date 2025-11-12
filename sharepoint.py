@@ -21,9 +21,15 @@ from langchain_huggingface import HuggingFacePipeline
 
 from transformers import AutoModel, AutoTokenizer, AutoModelForCausalLM, BitsAndBytesConfig, pipeline
 
+# --- NEW: Import Settings from chromadb to disable telemetry ---
+from chromadb.config import Settings
+
 # --- Configuration ---
-# Set up basic logging to see progress
+# Set up basic logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+
+# --- NEW: Suppress noisy PyPDF warnings ---
+logging.getLogger("pypdf").setLevel(logging.ERROR)
 
 # Define paths
 PDF_SOURCE_DIR = "./source_pdfs"
@@ -37,22 +43,14 @@ if DEVICE == "cpu":
     logging.warning("CUDA not available. The process will be very slow on CPU.")
 
 # --- Helper Function for Cleaning LLM Output ---
-
 def clean_llm_output(text: str) -> str:
-    """
-    Uses regex to remove <think>...</think> blocks and trims whitespace.
-    This is crucial for ensuring the output is clean JSON.
-    """
-    # Remove thoughts and reasoning blocks
+    """Uses regex to remove <think>...</think> blocks and trims whitespace."""
     cleaned_text = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL)
-    # Find the start of the JSON list or object
     json_start = cleaned_text.find('[')
     if json_start == -1:
         json_start = cleaned_text.find('{')
     
-    # If JSON is found, extract it
     if json_start != -1:
-        # Check for matching brackets to find the end of the JSON
         json_end = -1
         if cleaned_text[json_start] == '[':
             json_end = cleaned_text.rfind(']')
@@ -62,18 +60,11 @@ def clean_llm_output(text: str) -> str:
         if json_end > json_start:
             return cleaned_text[json_start : json_end + 1].strip()
 
-    # Fallback to simple stripping if no clear JSON block is found
     return cleaned_text.strip()
 
-
-# --- Step 1: Custom Qwen3 Embedding Class ---
-
+# --- Step 1: Custom Qwen3 Embedding Class (No changes needed here) ---
 class CustomQwenEmbeddings(Embeddings):
-    """
-    Custom LangChain embedding class for Qwen/Qwen3-Embedding-0.6B.
-    This class handles the model's specific requirements for instruction-based
-    embeddings and last-token pooling.
-    """
+    """Custom LangChain embedding class for Qwen/Qwen3-Embedding-0.6B."""
     def __init__(self, model_name: str = "Qwen/Qwen3-Embedding-0.6B", device: str = DEVICE):
         self.tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
         self.model = AutoModel.from_pretrained(model_name, trust_remote_code=True).to(device)
@@ -83,11 +74,9 @@ class CustomQwenEmbeddings(Embeddings):
         logging.info(f"CustomQwenEmbeddings initialized with model '{model_name}' on device '{device}'.")
 
     def _get_detailed_instruct(self, query: str) -> str:
-        """Formats a query with the specific instruction template."""
         return f'Instruct: {self.task_description}\nQuery: {query}'
 
     def _last_token_pool(self, last_hidden_states: torch.Tensor, attention_mask: torch.Tensor) -> torch.Tensor:
-        """Performs last token pooling on the model's output."""
         left_padding = (attention_mask[:, -1].sum() == attention_mask.shape[0])
         if left_padding:
             return last_hidden_states[:, -1]
@@ -97,7 +86,6 @@ class CustomQwenEmbeddings(Embeddings):
             return last_hidden_states[torch.arange(batch_size, device=last_hidden_states.device), sequence_lengths]
 
     def embed_documents(self, texts: List[str]) -> List[List[float]]:
-        """Embeds a list of documents."""
         max_length = 4096
         inputs = self.tokenizer(texts, max_length=max_length, padding=True, truncation=True, return_tensors="pt")
         inputs = {key: val.to(self.device) for key, val in inputs.items()}
@@ -107,11 +95,9 @@ class CustomQwenEmbeddings(Embeddings):
         
         embeddings = self._last_token_pool(outputs.last_hidden_state, inputs['attention_mask'])
         normalized_embeddings = F.normalize(embeddings, p=2, dim=1)
-        # Cast to float32 for compatibility and convert to list
         return normalized_embeddings.to(torch.float32).cpu().tolist()
 
     def embed_query(self, text: str) -> List[float]:
-        """Embeds a single query after formatting it."""
         instructed_query = self._get_detailed_instruct(text)
         max_length = 4096
         inputs = self.tokenizer([instructed_query], max_length=max_length, padding=True, truncation=True, return_tensors="pt")
@@ -122,7 +108,6 @@ class CustomQwenEmbeddings(Embeddings):
 
         embedding = self._last_token_pool(outputs.last_hidden_state, inputs['attention_mask'])
         normalized_embedding = F.normalize(embedding, p=2, dim=1)
-        # Cast to float32 for compatibility and convert to list
         return normalized_embedding.to(torch.float32).cpu().tolist()[0]
 
 
@@ -134,15 +119,23 @@ def setup_directories():
         logging.warning(f"Please add your PDF files to the '{PDF_SOURCE_DIR}' directory before running again.")
         exit()
 
-
+# --- MODIFIED FUNCTION ---
 def load_and_index_documents() -> Chroma:
     """Step 2: Handles the ingestion and indexing of PDF documents."""
     logging.info("--- Step 2: Document Ingestion & Indexing ---")
     
+    # --- NEW: Define Chroma settings to disable telemetry ---
+    chroma_settings = Settings(anonymized_telemetry=False)
+
     if os.path.exists(VECTORSTORE_DIR):
         logging.info(f"Loading existing vector store from {VECTORSTORE_DIR}...")
         embedding_function = CustomQwenEmbeddings()
-        vector_store = Chroma(persist_directory=VECTORSTORE_DIR, embedding_function=embedding_function)
+        # --- MODIFIED: Pass settings when loading existing store ---
+        vector_store = Chroma(
+            persist_directory=VECTORSTORE_DIR, 
+            embedding_function=embedding_function,
+            client_settings=chroma_settings
+        )
         logging.info("Vector store loaded successfully.")
         return vector_store
 
@@ -163,14 +156,18 @@ def load_and_index_documents() -> Chroma:
     embedding_function = CustomQwenEmbeddings()
 
     logging.info("Creating and persisting vector store... This may take a while.")
+    # --- MODIFIED: Pass settings when creating a new store ---
     vector_store = Chroma.from_documents(
         documents=chunks,
         embedding=embedding_function,
-        persist_directory=VECTORSTORE_DIR
+        persist_directory=VECTORSTORE_DIR,
+        client_settings=chroma_settings
     )
     logging.info(f"Vector store created and saved to {VECTORSTORE_DIR}.")
     return vector_store
 
+
+# --- The rest of the script remains the same ---
 
 def load_generator_llm() -> HuggingFacePipeline:
     """Step 3: Loads the Qwen3-1.7B generator model with 4-bit quantization."""
@@ -202,7 +199,7 @@ def load_generator_llm() -> HuggingFacePipeline:
         temperature=0.0,
         top_p=0.95,
         repetition_penalty=1.15,
-        return_full_text=False # Important for cleaner output in chains
+        return_full_text=False
     )
 
     llm = HuggingFacePipeline(pipeline=text_gen_pipeline)
@@ -232,7 +229,6 @@ Example: ["Project Budget Analysis", "Security Protocol Review", "Quarterly Perf
 """
     
     prompt = PromptTemplate(template=prompt_template, input_variables=["context"])
-    # Chain now includes the cleaning function before the JSON parser
     topic_chain = prompt | llm | RunnableLambda(clean_llm_output) | JsonOutputParser()
 
     logging.info("Invoking LLM to generate topics...")
@@ -253,7 +249,6 @@ def process_topics_and_extract_data(topics: List[str], vector_store: Chroma, llm
     compiled_data = {}
     retriever = vector_store.as_retriever(search_kwargs={"k": 15})
 
-    # UPDATED prompt to handle tables
     extraction_prompt_template = """<|system|>
 You are a meticulous data extraction assistant. Your sole purpose is to extract key facts and bullet points from the given context that are directly related to the specified topic.
 You must base your answer ONLY on the provided context. Do not add any information that is not present.
@@ -268,7 +263,6 @@ Topic: "{topic}"
 Based ONLY on the context provided above, extract all key bullet points, facts, and data points related to the topic.<|assistant|>
 """
     extraction_prompt = PromptTemplate(template=extraction_prompt_template, input_variables=["context", "topic"])
-    # Chain now includes the cleaning function before the JSON parser
     extraction_chain = extraction_prompt | llm | RunnableLambda(clean_llm_output) | JsonOutputParser()
 
     for i, topic in enumerate(topics):
@@ -286,7 +280,6 @@ Based ONLY on the context provided above, extract all key bullet points, facts, 
             logging.error(f"An error occurred during extraction for topic '{topic}': {e}")
             extracted_points = []
 
-        # Programmatic deduplication is faster and more reliable than a third LLM call.
         unique_points = sorted(list(set(point.strip() for point in extracted_points if isinstance(point, str) and point.strip())))
         
         if unique_points:
@@ -315,7 +308,6 @@ def generate_docx_report(data: dict, filename: str):
                 doc.add_paragraph("No specific bullet points were extracted for this topic.")
             else:
                 for point in points:
-                    # Final check to ensure no thought tags make it into the report
                     clean_point = re.sub(r"<think>.*?</think>", "", point, flags=re.DOTALL).strip()
                     if clean_point:
                         doc.add_paragraph(clean_point, style='List Bullet')
