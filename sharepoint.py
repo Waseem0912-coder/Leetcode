@@ -10,8 +10,9 @@ import torch
 import torch.nn.functional as F
 from docx import Document
 
+# --- MODIFIED IMPORT: Use the new, recommended package for Chroma ---
+from langchain_chroma import Chroma 
 from langchain_community.document_loaders import PyPDFDirectoryLoader
-from langchain_community.vectorstores import Chroma
 from langchain_core.embeddings import Embeddings
 from langchain_core.output_parsers import JsonOutputParser
 from langchain_core.prompts import PromptTemplate
@@ -21,22 +22,16 @@ from langchain_huggingface import HuggingFacePipeline
 
 from transformers import AutoModel, AutoTokenizer, AutoModelForCausalLM, BitsAndBytesConfig, pipeline
 
-# --- NEW: Import Settings from chromadb to disable telemetry ---
 from chromadb.config import Settings
 
 # --- Configuration ---
-# Set up basic logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-
-# --- NEW: Suppress noisy PyPDF warnings ---
 logging.getLogger("pypdf").setLevel(logging.ERROR)
 
-# Define paths
 PDF_SOURCE_DIR = "./source_pdfs"
 VECTORSTORE_DIR = "./chroma_db_qwen"
 OUTPUT_DOCX_FILE = "Consolidated_Report.docx"
 
-# Check for CUDA availability
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 logging.info(f"Using device: {DEVICE}")
 if DEVICE == "cpu":
@@ -62,7 +57,7 @@ def clean_llm_output(text: str) -> str:
 
     return cleaned_text.strip()
 
-# --- Step 1: Custom Qwen3 Embedding Class (No changes needed here) ---
+# --- Step 1: Custom Qwen3 Embedding Class (No changes here) ---
 class CustomQwenEmbeddings(Embeddings):
     """Custom LangChain embedding class for Qwen/Qwen3-Embedding-0.6B."""
     def __init__(self, model_name: str = "Qwen/Qwen3-Embedding-0.6B", device: str = DEVICE):
@@ -110,7 +105,6 @@ class CustomQwenEmbeddings(Embeddings):
         normalized_embedding = F.normalize(embedding, p=2, dim=1)
         return normalized_embedding.to(torch.float32).cpu().tolist()[0]
 
-
 def setup_directories():
     """Ensures the source PDF directory exists."""
     if not os.path.exists(PDF_SOURCE_DIR):
@@ -119,18 +113,15 @@ def setup_directories():
         logging.warning(f"Please add your PDF files to the '{PDF_SOURCE_DIR}' directory before running again.")
         exit()
 
-# --- MODIFIED FUNCTION ---
 def load_and_index_documents() -> Chroma:
     """Step 2: Handles the ingestion and indexing of PDF documents."""
     logging.info("--- Step 2: Document Ingestion & Indexing ---")
     
-    # --- NEW: Define Chroma settings to disable telemetry ---
     chroma_settings = Settings(anonymized_telemetry=False)
 
     if os.path.exists(VECTORSTORE_DIR):
         logging.info(f"Loading existing vector store from {VECTORSTORE_DIR}...")
         embedding_function = CustomQwenEmbeddings()
-        # --- MODIFIED: Pass settings when loading existing store ---
         vector_store = Chroma(
             persist_directory=VECTORSTORE_DIR, 
             embedding_function=embedding_function,
@@ -156,7 +147,6 @@ def load_and_index_documents() -> Chroma:
     embedding_function = CustomQwenEmbeddings()
 
     logging.info("Creating and persisting vector store... This may take a while.")
-    # --- MODIFIED: Pass settings when creating a new store ---
     vector_store = Chroma.from_documents(
         documents=chunks,
         embedding=embedding_function,
@@ -165,9 +155,6 @@ def load_and_index_documents() -> Chroma:
     )
     logging.info(f"Vector store created and saved to {VECTORSTORE_DIR}.")
     return vector_store
-
-
-# --- The rest of the script remains the same ---
 
 def load_generator_llm() -> HuggingFacePipeline:
     """Step 3: Loads the Qwen3-1.7B generator model with 4-bit quantization."""
@@ -206,7 +193,6 @@ def load_generator_llm() -> HuggingFacePipeline:
     logging.info("Generator LLM loaded and wrapped in LangChain pipeline.")
     return llm
 
-
 def generate_dynamic_topics(vector_store: Chroma, llm: HuggingFacePipeline) -> List[str]:
     """Step 4: Dynamically generates a list of main topics from the documents."""
     logging.info("--- Step 4: Dynamic Topic Generation (Pass 1) ---")
@@ -241,7 +227,6 @@ Example: ["Project Budget Analysis", "Security Protocol Review", "Quarterly Perf
     except Exception as e:
         logging.error(f"Failed to generate topics: {e}. Using fallback topics.")
         return ["General Analysis", "Key Findings", "Recommendations"]
-
 
 def process_topics_and_extract_data(topics: List[str], vector_store: Chroma, llm: HuggingFacePipeline) -> dict:
     """Step 5: Loops through topics, retrieves relevant context, and extracts key points."""
@@ -290,7 +275,6 @@ Based ONLY on the context provided above, extract all key bullet points, facts, 
 
     return compiled_data
 
-
 def generate_docx_report(data: dict, filename: str):
     """Step 6: Generates a .docx report from the compiled data."""
     logging.info(f"--- Step 6: Generating DOCX Report ---")
@@ -316,7 +300,6 @@ def generate_docx_report(data: dict, filename: str):
     doc.save(filename)
     logging.info(f"Report successfully saved as '{filename}'")
 
-
 def main():
     """Main function to orchestrate the entire RAG pipeline."""
     logging.info("Starting the Automated Report Generation Pipeline.")
@@ -334,7 +317,6 @@ def main():
     generate_docx_report(compiled_data, OUTPUT_DOCX_FILE)
     
     logging.info("Pipeline finished successfully.")
-
 
 if __name__ == "__main__":
     main()
