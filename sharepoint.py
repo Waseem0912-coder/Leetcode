@@ -1,220 +1,348 @@
-# rag_report_generator.py
+#!/usr/bin/env python
 
 import os
+import re
+import json
+import logging
+from typing import List
+
 import torch
 import torch.nn.functional as F
-from torch import Tensor
-from transformers import AutoTokenizer, AutoModel, AutoModelForCausalLM
-import pypdf
-import faiss
-import numpy as np
 from docx import Document
-import warnings
 
-# Suppress a specific warning from the pypdf library
-warnings.filterwarnings("ignore", category=pypdf.errors.PdfReadWarning)
+from langchain_community.document_loaders import PyPDFDirectoryLoader
+from langchain_community.vectorstores import Chroma
+from langchain_core.embeddings import Embeddings
+from langchain_core.output_parsers import JsonOutputParser
+from langchain_core.prompts import PromptTemplate
+from langchain_core.runnables import RunnableLambda
+from langchain_text_splitters import RecursiveCharacterTextSplitter
+from langchain_huggingface import HuggingFacePipeline
+
+from transformers import AutoModel, AutoTokenizer, AutoModelForCausalLM, BitsAndBytesConfig, pipeline
 
 # --- Configuration ---
-PDF_FOLDER = "pdf"
-EMBEDDING_MODEL_NAME = 'Qwen/Qwen3-Embedding-0.6B'
-LLM_NAME = "Qwen/Qwen3-1.7B"
-CHUNK_SIZE = 1000  # Number of characters per chunk
-CHUNK_OVERLAP = 150 # Number of characters to overlap between chunks
-TOP_K_RESULTS = 5 # Number of relevant chunks to retrieve for each topic
-OUTPUT_FILENAME = "RAG_Generated_Report.docx"
+# Set up basic logging to see progress
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-# --- Helper Functions for Embedding (from your example) ---
-def last_token_pool(last_hidden_states: Tensor, attention_mask: Tensor) -> Tensor:
-    left_padding = (attention_mask[:, -1].sum() == attention_mask.shape[0])
-    if left_padding:
-        return last_hidden_states[:, -1]
-    else:
-        sequence_lengths = attention_mask.sum(dim=1) - 1
-        batch_size = last_hidden_states.shape[0]
-        return last_hidden_states[torch.arange(batch_size, device=last_hidden_states.device), sequence_lengths]
+# Define paths
+PDF_SOURCE_DIR = "./source_pdfs"
+VECTORSTORE_DIR = "./chroma_db_qwen"
+OUTPUT_DOCX_FILE = "Consolidated_Report.docx"
 
-# --- Core RAG Application Functions ---
+# Check for CUDA availability
+DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+logging.info(f"Using device: {DEVICE}")
+if DEVICE == "cpu":
+    logging.warning("CUDA not available. The process will be very slow on CPU.")
 
-def load_models():
-    """Loads the embedding and language models with quantization/lower precision."""
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-    print(f"Using device: {device}")
+# --- Helper Function for Cleaning LLM Output ---
 
-    # 1. Load Embedding Model
-    print(f"Loading embedding model: {EMBEDDING_MODEL_NAME}...")
-    # Using bfloat16 for memory efficiency
-    embedding_tokenizer = AutoTokenizer.from_pretrained(EMBEDDING_MODEL_NAME, padding_side='left')
-    embedding_model = AutoModel.from_pretrained(EMBEDDING_MODEL_NAME, torch_dtype=torch.bfloat16).to(device)
-    embedding_model.eval()
-    print("Embedding model loaded.")
-
-    # 2. Load Language Model (LLM) for generation
-    print(f"Loading language model: {LLM_NAME}...")
-    llm_tokenizer = AutoTokenizer.from_pretrained(LLM_NAME)
-    llm = AutoModelForCausalLM.from_pretrained(
-        LLM_NAME,
-        torch_dtype="auto", # Automatically uses bfloat16 on compatible hardware
-        device_map="auto"   # Automatically handles device placement
-    )
-    print("Language model loaded.")
+def clean_llm_output(text: str) -> str:
+    """
+    Uses regex to remove <think>...</think> blocks and trims whitespace.
+    This is crucial for ensuring the output is clean JSON.
+    """
+    # Remove thoughts and reasoning blocks
+    cleaned_text = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL)
+    # Find the start of the JSON list or object
+    json_start = cleaned_text.find('[')
+    if json_start == -1:
+        json_start = cleaned_text.find('{')
     
-    return embedding_model, embedding_tokenizer, llm, llm_tokenizer, device
+    # If JSON is found, extract it
+    if json_start != -1:
+        # Check for matching brackets to find the end of the JSON
+        json_end = -1
+        if cleaned_text[json_start] == '[':
+            json_end = cleaned_text.rfind(']')
+        else:
+            json_end = cleaned_text.rfind('}')
+            
+        if json_end > json_start:
+            return cleaned_text[json_start : json_end + 1].strip()
 
-def extract_text_from_pdf(pdf_path):
-    """Extracts text from a single PDF file."""
-    try:
-        reader = pypdf.PdfReader(pdf_path)
-        text = ""
-        for page in reader.pages:
-            page_text = page.extract_text()
-            if page_text:
-                text += page_text + "\n"
-        return text
-    except Exception as e:
-        print(f"Error reading {pdf_path}: {e}")
-        return None
+    # Fallback to simple stripping if no clear JSON block is found
+    return cleaned_text.strip()
 
-def chunk_text(text, size=CHUNK_SIZE, overlap=CHUNK_OVERLAP):
-    """Splits text into overlapping chunks."""
-    return [text[i:i+size] for i in range(0, len(text), size - overlap)]
 
-def create_embeddings(texts, model, tokenizer, device, batch_size=32):
-    """Creates embeddings for a list of text chunks in batches."""
-    all_embeddings = []
-    for i in range(0, len(texts), batch_size):
-        batch_texts = texts[i:i+batch_size]
-        batch_dict = tokenizer(
-            batch_texts,
-            padding=True,
-            truncation=True,
-            max_length=8192,
-            return_tensors="pt"
-        ).to(device)
+# --- Step 1: Custom Qwen3 Embedding Class ---
+
+class CustomQwenEmbeddings(Embeddings):
+    """
+    Custom LangChain embedding class for Qwen/Qwen3-Embedding-0.6B.
+    This class handles the model's specific requirements for instruction-based
+    embeddings and last-token pooling.
+    """
+    def __init__(self, model_name: str = "Qwen/Qwen3-Embedding-0.6B", device: str = DEVICE):
+        self.tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
+        self.model = AutoModel.from_pretrained(model_name, trust_remote_code=True).to(device)
+        self.model.eval()
+        self.device = device
+        self.task_description = 'Given a web search query, retrieve relevant passages that answer the query'
+        logging.info(f"CustomQwenEmbeddings initialized with model '{model_name}' on device '{device}'.")
+
+    def _get_detailed_instruct(self, query: str) -> str:
+        """Formats a query with the specific instruction template."""
+        return f'Instruct: {self.task_description}\nQuery: {query}'
+
+    def _last_token_pool(self, last_hidden_states: torch.Tensor, attention_mask: torch.Tensor) -> torch.Tensor:
+        """Performs last token pooling on the model's output."""
+        left_padding = (attention_mask[:, -1].sum() == attention_mask.shape[0])
+        if left_padding:
+            return last_hidden_states[:, -1]
+        else:
+            sequence_lengths = attention_mask.sum(dim=1) - 1
+            batch_size = last_hidden_states.shape[0]
+            return last_hidden_states[torch.arange(batch_size, device=last_hidden_states.device), sequence_lengths]
+
+    def embed_documents(self, texts: List[str]) -> List[List[float]]:
+        """Embeds a list of documents."""
+        max_length = 4096
+        inputs = self.tokenizer(texts, max_length=max_length, padding=True, truncation=True, return_tensors="pt")
+        inputs = {key: val.to(self.device) for key, val in inputs.items()}
         
         with torch.no_grad():
-            outputs = model(**batch_dict)
-            embeddings = last_token_pool(outputs.last_hidden_state, batch_dict['attention_mask'])
-            embeddings = F.normalize(embeddings, p=2, dim=1)
-        all_embeddings.append(embeddings.cpu())
-
-    return torch.cat(all_embeddings, dim=0).numpy()
-
-def build_vector_store(embeddings):
-    """Builds a FAISS index for efficient similarity search."""
-    dimension = embeddings.shape[1]
-    index = faiss.IndexFlatL2(dimension)
-    index.add(embeddings)
-    return index
-
-def search_vector_store(query_embedding, index, k=TOP_K_RESULTS):
-    """Searches the vector store for the top_k most similar chunks."""
-    distances, indices = index.search(query_embedding, k)
-    return indices[0]
-
-def generate_llm_response(prompt, model, tokenizer):
-    """Generates a response from the LLM using a given prompt."""
-    messages = [{"role": "user", "content": prompt}]
-    text = tokenizer.apply_chat_template(
-        messages,
-        tokenize=False,
-        add_generation_prompt=True
-    )
-    model_inputs = tokenizer([text], return_tensors="pt").to(model.device)
-
-    generated_ids = model.generate(
-        **model_inputs,
-        max_new_tokens=1024, # Limit response length
-        do_sample=False
-    )
-    output_ids = generated_ids[0][len(model_inputs.input_ids[0]):]
-    content = tokenizer.decode(output_ids, skip_special_tokens=True).strip()
-    return content
-
-# --- Main Execution Logic ---
-if __name__ == "__main__":
-    # 1. Setup
-    if not os.path.exists(PDF_FOLDER):
-        os.makedirs(PDF_FOLDER)
-        print(f"Created folder '{PDF_FOLDER}'. Please add your PDF files there and run again.")
-        exit()
-
-    pdf_files = [f for f in os.listdir(PDF_FOLDER) if f.lower().endswith(".pdf")]
-    if not pdf_files:
-        print(f"No PDF files found in the '{PDF_FOLDER}' directory. Please add some PDFs.")
-        exit()
+            outputs = self.model(**inputs, return_dict=True)
         
-    print(f"Found {len(pdf_files)} PDF(s) to process: {', '.join(pdf_files)}")
+        embeddings = self._last_token_pool(outputs.last_hidden_state, inputs['attention_mask'])
+        normalized_embeddings = F.normalize(embeddings, p=2, dim=1)
+        # Cast to float32 for compatibility and convert to list
+        return normalized_embeddings.to(torch.float32).cpu().tolist()
 
-    # 2. Load Models
-    embed_model, embed_tok, llm, llm_tok, device = load_models()
+    def embed_query(self, text: str) -> List[float]:
+        """Embeds a single query after formatting it."""
+        instructed_query = self._get_detailed_instruct(text)
+        max_length = 4096
+        inputs = self.tokenizer([instructed_query], max_length=max_length, padding=True, truncation=True, return_tensors="pt")
+        inputs = {key: val.to(self.device) for key, val in inputs.items()}
+
+        with torch.no_grad():
+            outputs = self.model(**inputs, return_dict=True)
+
+        embedding = self._last_token_pool(outputs.last_hidden_state, inputs['attention_mask'])
+        normalized_embedding = F.normalize(embedding, p=2, dim=1)
+        # Cast to float32 for compatibility and convert to list
+        return normalized_embedding.to(torch.float32).cpu().tolist()[0]
+
+
+def setup_directories():
+    """Ensures the source PDF directory exists."""
+    if not os.path.exists(PDF_SOURCE_DIR):
+        os.makedirs(PDF_SOURCE_DIR)
+        logging.info(f"Created directory: {PDF_SOURCE_DIR}")
+        logging.warning(f"Please add your PDF files to the '{PDF_SOURCE_DIR}' directory before running again.")
+        exit()
+
+
+def load_and_index_documents() -> Chroma:
+    """Step 2: Handles the ingestion and indexing of PDF documents."""
+    logging.info("--- Step 2: Document Ingestion & Indexing ---")
     
-    # Create a new Word document
-    doc = Document()
-    doc.add_heading('RAG-Based PDF Analysis Report', level=0)
+    if os.path.exists(VECTORSTORE_DIR):
+        logging.info(f"Loading existing vector store from {VECTORSTORE_DIR}...")
+        embedding_function = CustomQwenEmbeddings()
+        vector_store = Chroma(persist_directory=VECTORSTORE_DIR, embedding_function=embedding_function)
+        logging.info("Vector store loaded successfully.")
+        return vector_store
 
-    # 3. Process each PDF
-    for pdf_file in pdf_files:
-        print(f"\n{'='*50}\nProcessing: {pdf_file}\n{'='*50}")
-        doc.add_heading(f"Report for: {pdf_file}", level=1)
-        pdf_path = os.path.join(PDF_FOLDER, pdf_file)
+    logging.info(f"No existing vector store found. Starting ingestion from {PDF_SOURCE_DIR}...")
+    loader = PyPDFDirectoryLoader(PDF_SOURCE_DIR)
+    documents = loader.load()
 
-        # a. Extract and Chunk Text
-        print("Step 1: Extracting and chunking text...")
-        full_text = extract_text_from_pdf(pdf_path)
-        if not full_text or not full_text.strip():
-            print(f"Could not extract text from {pdf_file}, or it is empty. Skipping.")
-            doc.add_paragraph("Could not extract text from this document.")
-            doc.add_page_break()
-            continue
-        chunks = chunk_text(full_text)
-        print(f"Created {len(chunks)} text chunks.")
+    if not documents:
+        logging.error(f"No PDF documents found in '{PDF_SOURCE_DIR}'. Please add files and restart.")
+        exit()
+    
+    logging.info(f"Loaded {len(documents)} document pages.")
+    text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=150)
+    chunks = text_splitter.split_documents(documents)
+    logging.info(f"Split documents into {len(chunks)} chunks.")
 
-        # b. Create Embeddings and Vector Store
-        print("Step 2: Creating embeddings and building vector store...")
-        chunk_embeddings = create_embeddings(chunks, embed_model, embed_tok, device)
-        vector_store = build_vector_store(chunk_embeddings)
-        print("Vector store created.")
+    logging.info("Initializing custom embedding model for indexing...")
+    embedding_function = CustomQwenEmbeddings()
 
-        # c. Identify Topics in the Document using the LLM
-        print("Step 3: Identifying main topics...")
-        topic_identification_prompt = f"""
-        Analyze the beginning of the following document and identify the main sections or key topics discussed.
-        List them as a comma-separated list. For example: 'Introduction, Methodology, Key Findings, Conclusion'.
+    logging.info("Creating and persisting vector store... This may take a while.")
+    vector_store = Chroma.from_documents(
+        documents=chunks,
+        embedding=embedding_function,
+        persist_directory=VECTORSTORE_DIR
+    )
+    logging.info(f"Vector store created and saved to {VECTORSTORE_DIR}.")
+    return vector_store
+
+
+def load_generator_llm() -> HuggingFacePipeline:
+    """Step 3: Loads the Qwen3-1.7B generator model with 4-bit quantization."""
+    logging.info("--- Step 3: Loading Generator LLM ---")
+    
+    model_id = "Qwen/Qwen3-1.7B"
+    bnb_config = BitsAndBytesConfig(
+        load_in_4bit=True,
+        bnb_4bit_use_double_quant=True,
+        bnb_4bit_quant_type="nf4",
+        bnb_4bit_compute_dtype=torch.bfloat16
+    )
+
+    logging.info(f"Loading tokenizer for {model_id}...")
+    tokenizer = AutoTokenizer.from_pretrained(model_id)
+
+    logging.info(f"Loading model '{model_id}' with 4-bit quantization...")
+    model = AutoModelForCausalLM.from_pretrained(
+        model_id,
+        quantization_config=bnb_config,
+        device_map="auto"
+    )
+
+    text_gen_pipeline = pipeline(
+        "text-generation",
+        model=model,
+        tokenizer=tokenizer,
+        max_new_tokens=2048,
+        temperature=0.0,
+        top_p=0.95,
+        repetition_penalty=1.15,
+        return_full_text=False # Important for cleaner output in chains
+    )
+
+    llm = HuggingFacePipeline(pipeline=text_gen_pipeline)
+    logging.info("Generator LLM loaded and wrapped in LangChain pipeline.")
+    return llm
+
+
+def generate_dynamic_topics(vector_store: Chroma, llm: HuggingFacePipeline) -> List[str]:
+    """Step 4: Dynamically generates a list of main topics from the documents."""
+    logging.info("--- Step 4: Dynamic Topic Generation (Pass 1) ---")
+    retriever = vector_store.as_retriever(search_kwargs={"k": 20})
+    
+    sample_docs = retriever.get_relevant_documents("What are the main subjects, themes, and topics in these documents?")
+    context_text = "\n\n".join([doc.page_content for doc in sample_docs])
+
+    prompt_template = """<|system|>
+You are an expert analyst. Your task is to identify the main topics from the provided text.
+Base your answer ONLY on the provided context. Respond ONLY with a JSON list of strings.
+If no topics can be identified, respond with an empty list [].<|user|>
+Context:
+{context}
+
+Analyze the context above. Identify the 5-7 most important, high-level topics discussed.
+Do not invent topics not present in the text.
+Your response must be a single JSON list of strings.
+Example: ["Project Budget Analysis", "Security Protocol Review", "Quarterly Performance Metrics"]<|assistant|>
+"""
+    
+    prompt = PromptTemplate(template=prompt_template, input_variables=["context"])
+    # Chain now includes the cleaning function before the JSON parser
+    topic_chain = prompt | llm | RunnableLambda(clean_llm_output) | JsonOutputParser()
+
+    logging.info("Invoking LLM to generate topics...")
+    try:
+        topics = topic_chain.invoke({"context": context_text})
+        logging.info(f"Dynamically generated topics: {topics}")
+        if not isinstance(topics, list) or not all(isinstance(t, str) for t in topics):
+            raise ValueError("LLM did not return a valid JSON list of strings for topics.")
+        return topics
+    except Exception as e:
+        logging.error(f"Failed to generate topics: {e}. Using fallback topics.")
+        return ["General Analysis", "Key Findings", "Recommendations"]
+
+
+def process_topics_and_extract_data(topics: List[str], vector_store: Chroma, llm: HuggingFacePipeline) -> dict:
+    """Step 5: Loops through topics, retrieves relevant context, and extracts key points."""
+    logging.info("--- Step 5: Topic-Based Extraction Loop (Pass 2 & 3) ---")
+    compiled_data = {}
+    retriever = vector_store.as_retriever(search_kwargs={"k": 15})
+
+    # UPDATED prompt to handle tables
+    extraction_prompt_template = """<|system|>
+You are a meticulous data extraction assistant. Your sole purpose is to extract key facts and bullet points from the given context that are directly related to the specified topic.
+You must base your answer ONLY on the provided context. Do not add any information that is not present.
+The context may contain unstructured text extracted from tables; interpret it as best as you can to pull out key data points.
+Your response must be ONLY a JSON list of strings.
+If no relevant information is found in the context for the given topic, you must respond with an empty list [].<|user|>
+Context:
+{context}
+
+Topic: "{topic}"
+
+Based ONLY on the context provided above, extract all key bullet points, facts, and data points related to the topic.<|assistant|>
+"""
+    extraction_prompt = PromptTemplate(template=extraction_prompt_template, input_variables=["context", "topic"])
+    # Chain now includes the cleaning function before the JSON parser
+    extraction_chain = extraction_prompt | llm | RunnableLambda(clean_llm_output) | JsonOutputParser()
+
+    for i, topic in enumerate(topics):
+        logging.info(f"Processing topic {i+1}/{len(topics)}: '{topic}'")
         
-        Document Start:
-        "{' '.join(chunks[:2])[:2000]}" 
-        """
-        topic_list_str = generate_llm_response(topic_identification_prompt, llm, llm_tok)
-        topics = [topic.strip() for topic in topic_list_str.split(',') if topic.strip()]
-        print(f"Identified Topics: {topics}")
-        if not topics:
-            topics = ["General Summary"] # Fallback topic
+        retrieved_docs = retriever.get_relevant_documents(topic)
+        context = "\n\n".join([doc.page_content for doc in retrieved_docs])
 
-        # d. Generate Report Section by Section
-        print("Step 4: Generating report for each topic...")
-        for topic in topics:
-            print(f"  - Generating summary for topic: '{topic}'")
-            doc.add_heading(topic, level=2)
+        try:
+            extracted_points = extraction_chain.invoke({"context": context, "topic": topic})
+            if not isinstance(extracted_points, list):
+                logging.warning(f"LLM returned non-list data for topic '{topic}'. Skipping.")
+                extracted_points = []
+        except Exception as e:
+            logging.error(f"An error occurred during extraction for topic '{topic}': {e}")
+            extracted_points = []
 
-            # Find relevant chunks for the current topic
-            query_embedding = create_embeddings([topic], embed_model, embed_tok, device)
-            relevant_indices = search_vector_store(query_embedding, vector_store)
-            context = "\n\n---\n\n".join([chunks[i] for i in relevant_indices])
+        # Programmatic deduplication is faster and more reliable than a third LLM call.
+        unique_points = sorted(list(set(point.strip() for point in extracted_points if isinstance(point, str) and point.strip())))
+        
+        if unique_points:
+            logging.info(f"  - Extracted and deduplicated {len(unique_points)} points for '{topic}'.")
+            compiled_data[topic] = unique_points
+        else:
+            logging.info(f"  - No relevant points found for '{topic}'.")
 
-            # Ask the LLM to summarize the findings for this topic based on context
-            summary_prompt = f"""
-            You are a professional analyst. Based ONLY on the provided context below, write a detailed summary about the topic: '{topic}'.
-            Focus on organizing all the unique things that happened, key data points, or conclusions mentioned.
-            Do not invent information. Structure your answer as a clear and concise report section.
-            
-            CONTEXT:
-            {context}
-            """
-            section_report = generate_llm_response(summary_prompt, llm, llm_tok)
-            doc.add_paragraph(section_report)
+    return compiled_data
 
-        doc.add_page_break()
 
-    # 4. Save the final document
-    doc.save(OUTPUT_FILENAME)
-    print(f"\n{'='*50}\nReport generation complete.\nOutput saved to: {OUTPUT_FILENAME}\n{'='*50}")
+def generate_docx_report(data: dict, filename: str):
+    """Step 6: Generates a .docx report from the compiled data."""
+    logging.info(f"--- Step 6: Generating DOCX Report ---")
+    doc = Document()
+    doc.add_heading('Consolidated RAG Analysis Report', level=0)
+    doc.add_paragraph(f'This report was automatically generated by analyzing documents in the "{PDF_SOURCE_DIR}" directory.')
+    doc.add_paragraph()
+
+    if not data:
+        doc.add_paragraph("No data was successfully extracted from the source documents.")
+    else:
+        for topic, points in data.items():
+            doc.add_heading(topic, level=1)
+            if not points:
+                doc.add_paragraph("No specific bullet points were extracted for this topic.")
+            else:
+                for point in points:
+                    # Final check to ensure no thought tags make it into the report
+                    clean_point = re.sub(r"<think>.*?</think>", "", point, flags=re.DOTALL).strip()
+                    if clean_point:
+                        doc.add_paragraph(clean_point, style='List Bullet')
+            doc.add_paragraph()
+
+    doc.save(filename)
+    logging.info(f"Report successfully saved as '{filename}'")
+
+
+def main():
+    """Main function to orchestrate the entire RAG pipeline."""
+    logging.info("Starting the Automated Report Generation Pipeline.")
+    
+    setup_directories()
+    vector_store = load_and_index_documents()
+    llm = load_generator_llm()
+    dynamic_topics = generate_dynamic_topics(vector_store, llm)
+    
+    if not dynamic_topics:
+        logging.error("Could not generate any topics. Exiting pipeline.")
+        return
+        
+    compiled_data = process_topics_and_extract_data(dynamic_topics, vector_store, llm)
+    generate_docx_report(compiled_data, OUTPUT_DOCX_FILE)
+    
+    logging.info("Pipeline finished successfully.")
+
+
+if __name__ == "__main__":
+    main()
