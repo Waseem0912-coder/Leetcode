@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """
-Optimized RAG Pipeline for Large Models (Qwen3-235B)
-- Uses JSON format (reliable with 235B parameters)
-- Qwen3-Embedding-8B for embeddings
-- Qwen3-235B for extraction and topic discovery
-- Cleaner code, fewer fallbacks needed
+Optimized RAG Pipeline for Qwen3-Next-80B-A3B-Instruct
+- Uses Qwen3-Embedding-8B for embeddings
+- Uses Qwen3-Next-80B for extraction with proper chat templates
+- Multi-GPU support with automatic device mapping
+- Clean JSON-based extraction
 """
 import os
 import json
@@ -20,18 +20,13 @@ from tqdm import tqdm
 from langchain_community.document_loaders import PyPDFDirectoryLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_community.vectorstores import Chroma
-from langchain_core.prompts import PromptTemplate
-from langchain_core.output_parsers import StrOutputParser
 from langchain_core.embeddings import Embeddings
-from langchain_huggingface import HuggingFacePipeline
 
 # Transformers imports
 from transformers import (
     AutoModelForCausalLM,
     AutoTokenizer,
     AutoModel,
-    pipeline,
-    BitsAndBytesConfig
 )
 
 # Document generation
@@ -53,27 +48,36 @@ class CustomQwenEmbeddings(Embeddings):
     def __init__(self, model_name: str = "Qwen/Qwen3-Embedding-8B", device: str = None):
         """Initialize the Qwen3-Embedding-8B model."""
         self.device = device or ('cuda' if torch.cuda.is_available() else 'cpu')
-        logger.info(f"Loading embedding model: {model_name} on {self.device}")
+        logger.info(f"Loading embedding model: {model_name}")
+        
+        # Check available GPUs
+        if torch.cuda.is_available():
+            num_gpus = torch.cuda.device_count()
+            logger.info(f"Found {num_gpus} GPU(s) available for embeddings")
+            for i in range(num_gpus):
+                gpu_name = torch.cuda.get_device_name(i)
+                gpu_mem = torch.cuda.get_device_properties(i).total_memory / 1e9
+                logger.info(f"  GPU {i}: {gpu_name} ({gpu_mem:.1f} GB)")
         
         self.tokenizer = AutoTokenizer.from_pretrained(
             model_name,
             trust_remote_code=True
         )
         
-        # Load with optimized settings for 8B model
+        # Load with automatic device mapping for multi-GPU
         self.model = AutoModel.from_pretrained(
             model_name,
             trust_remote_code=True,
             torch_dtype=torch.float16 if self.device == 'cuda' else torch.float32,
-            device_map="auto"  # Automatic device mapping for multi-GPU
-        ).to(self.device)
+            device_map="auto"  # Automatic multi-GPU distribution
+        )
         
         self.model.eval()
         
         if self.tokenizer.pad_token is None:
             self.tokenizer.pad_token = self.tokenizer.eos_token
         
-        logger.info(f"Embedding model loaded successfully on {self.device}")
+        logger.info(f"Embedding model loaded successfully")
     
     @staticmethod
     def last_token_pool(last_hidden_states: torch.Tensor, attention_mask: torch.Tensor) -> torch.Tensor:
@@ -107,7 +111,10 @@ class CustomQwenEmbeddings(Embeddings):
                 truncation=True,
                 max_length=512,
                 return_tensors="pt"
-            ).to(self.device)
+            )
+            
+            # Move to appropriate device (handled by device_map="auto")
+            inputs = {k: v.to(self.model.device) for k, v in inputs.items()}
             
             with torch.no_grad():
                 outputs = self.model(**inputs)
@@ -132,7 +139,10 @@ class CustomQwenEmbeddings(Embeddings):
             truncation=True,
             max_length=512,
             return_tensors="pt"
-        ).to(self.device)
+        )
+        
+        # Move to appropriate device
+        inputs = {k: v.to(self.model.device) for k, v in inputs.items()}
         
         with torch.no_grad():
             outputs = self.model(**inputs)
@@ -146,8 +156,104 @@ class CustomQwenEmbeddings(Embeddings):
         return embedding[0].cpu().numpy().tolist()
 
 
+class Qwen3NextLLM:
+    """Wrapper for Qwen3-Next-80B model with proper chat template support."""
+    
+    def __init__(self, model_name: str = "Qwen/Qwen3-Next-80B-A3B-Instruct"):
+        """Initialize Qwen3-Next-80B model."""
+        logger.info(f"Loading language model: {model_name}")
+        
+        # Check available GPUs
+        if torch.cuda.is_available():
+            num_gpus = torch.cuda.device_count()
+            logger.info(f"Found {num_gpus} GPU(s) available for LLM")
+            for i in range(num_gpus):
+                gpu_name = torch.cuda.get_device_name(i)
+                gpu_mem = torch.cuda.get_device_properties(i).total_memory / 1e9
+                logger.info(f"  GPU {i}: {gpu_name} ({gpu_mem:.1f} GB)")
+        
+        # Load tokenizer
+        self.tokenizer = AutoTokenizer.from_pretrained(
+            model_name,
+            trust_remote_code=True
+        )
+        
+        # Load model with automatic multi-GPU distribution
+        self.model = AutoModelForCausalLM.from_pretrained(
+            model_name,
+            torch_dtype="auto",  # Automatic dtype selection
+            device_map="auto",   # Automatic multi-GPU distribution
+            trust_remote_code=True
+        )
+        
+        self.model.eval()
+        
+        logger.info(f"Language model loaded successfully")
+        logger.info(f"Model device map: {self.model.hf_device_map if hasattr(self.model, 'hf_device_map') else 'Single device'}")
+    
+    def generate(self, prompt: str, max_new_tokens: int = 2048, temperature: float = 0.1) -> str:
+        """
+        Generate text using Qwen3-Next with proper chat template.
+        
+        Args:
+            prompt: The user prompt
+            max_new_tokens: Maximum tokens to generate
+            temperature: Sampling temperature
+        
+        Returns:
+            Generated text response
+        """
+        # Format using chat template
+        messages = [
+            {"role": "user", "content": prompt}
+        ]
+        
+        text = self.tokenizer.apply_chat_template(
+            messages,
+            tokenize=False,
+            add_generation_prompt=True
+        )
+        
+        # Tokenize
+        model_inputs = self.tokenizer([text], return_tensors="pt")
+        
+        # Move to model device (first GPU if multi-GPU)
+        device = next(self.model.parameters()).device
+        model_inputs = {k: v.to(device) for k, v in model_inputs.items()}
+        
+        # Generate
+        with torch.no_grad():
+            generated_ids = self.model.generate(
+                **model_inputs,
+                max_new_tokens=max_new_tokens,
+                temperature=temperature,
+                do_sample=temperature > 0,
+                top_p=0.9 if temperature > 0 else None,
+                repetition_penalty=1.05,
+                pad_token_id=self.tokenizer.pad_token_id,
+                eos_token_id=self.tokenizer.eos_token_id,
+            )
+        
+        # Decode only the generated part
+        output_ids = generated_ids[0][len(model_inputs.input_ids[0]):].tolist()
+        content = self.tokenizer.decode(output_ids, skip_special_tokens=True)
+        
+        return content.strip()
+    
+    def invoke(self, input_dict: Dict[str, str]) -> str:
+        """LangChain-compatible invoke method."""
+        # Extract the prompt from input
+        if isinstance(input_dict, dict):
+            # Reconstruct prompt from template variables
+            prompt = str(input_dict)
+        else:
+            prompt = str(input_dict)
+        
+        return self.generate(prompt)
+
+
 class RAGPipeline:
-    """RAG pipeline optimized for Qwen3-235B model."""
+    """RAG pipeline optimized for Qwen3-Next-80B with multi-GPU support."""
     
     def __init__(self, source_dir: str = "./source_pdfs", persist_dir: str = "./chroma_db"):
         """Initialize the RAG pipeline."""
@@ -157,64 +263,10 @@ class RAGPipeline:
         self.llm = None
         self.embeddings = None
     
-    def setup_llm(self, quantization: str = "4bit"):
-        """
-        Set up the Qwen3-235B language model.
-        
-        Args:
-            quantization: "4bit", "8bit", or "none"
-        """
-        logger.info(f"Setting up Qwen3-235B with {quantization} quantization...")
-        
-        model_name = "Qwen/Qwen3-235B"
-        
-        # Configure quantization based on choice
-        if quantization == "4bit":
-            quantization_config = BitsAndBytesConfig(
-                load_in_4bit=True,
-                bnb_4bit_quant_type="nf4",
-                bnb_4bit_compute_dtype=torch.float16,
-                bnb_4bit_use_double_quant=True
-            )
-        elif quantization == "8bit":
-            quantization_config = BitsAndBytesConfig(
-                load_in_8bit=True
-            )
-        else:
-            quantization_config = None
-        
-        # Load tokenizer
-        tokenizer = AutoTokenizer.from_pretrained(
-            model_name,
-            trust_remote_code=True
-        )
-        
-        if tokenizer.pad_token is None:
-            tokenizer.pad_token = tokenizer.eos_token
-        
-        # Load model
-        model = AutoModelForCausalLM.from_pretrained(
-            model_name,
-            quantization_config=quantization_config,
-            trust_remote_code=True,
-            device_map="auto",  # Automatic multi-GPU distribution
-            torch_dtype=torch.float16 if quantization_config else torch.float32
-        )
-        
-        # Optimized generation parameters for 235B model
-        text_pipeline = pipeline(
-            "text-generation",
-            model=model,
-            tokenizer=tokenizer,
-            max_new_tokens=2048,  # Large models can handle more tokens
-            temperature=0.1,  # Low temperature for factual extraction
-            do_sample=True,
-            top_p=0.9,
-            repetition_penalty=1.05,
-            pad_token_id=tokenizer.pad_token_id
-        )
-        
-        self.llm = HuggingFacePipeline(pipeline=text_pipeline)
+    def setup_llm(self):
+        """Set up the Qwen3-Next-80B language model."""
+        logger.info("Setting up Qwen3-Next-80B...")
+        self.llm = Qwen3NextLLM(model_name="Qwen/Qwen3-Next-80B-A3B-Instruct")
         logger.info("LLM setup complete")
     
     def setup_embeddings(self):
@@ -244,7 +296,7 @@ class RAGPipeline:
         
         # Optimal chunking for large models
         text_splitter = RecursiveCharacterTextSplitter(
-            chunk_size=1000,  # Larger chunks work well with 235B
+            chunk_size=1000,
             chunk_overlap=200,
             length_function=len,
             separators=["\n\n", "\n", ". ", " ", ""]
@@ -264,9 +316,7 @@ class RAGPipeline:
         return True
     
     def discover_topics(self, sample_size: int = 50) -> List[str]:
-        """
-        Discover main topics using Qwen3-235B (reliable JSON generation).
-        """
+        """Discover main topics using Qwen3-Next-80B."""
         logger.info("Discovering topics from documents...")
         
         retriever = self.vector_store.as_retriever(
@@ -278,13 +328,11 @@ class RAGPipeline:
         
         context = "\n\n".join([doc.page_content for doc in sample_docs[:20]])
         
-        # Clean, simple prompt for 235B model
-        topic_prompt = PromptTemplate(
-            input_variables=["context"],
-            template="""Analyze the following text and identify 6-8 main topics or themes covered.
+        # Create prompt for topic discovery
+        prompt = f"""Analyze the following text and identify 6-8 main topics or themes covered.
 
 Text:
-{context}
+{context[:10000]}
 
 Return your response as a JSON array of topic strings. Return ONLY the JSON array, nothing else.
 
@@ -292,12 +340,11 @@ Example format:
 ["Topic 1", "Topic 2", "Topic 3", "Topic 4", "Topic 5", "Topic 6"]
 
 JSON array:"""
-        )
         
-        topic_chain = topic_prompt | self.llm | StrOutputParser()
-        result = topic_chain.invoke({"context": context[:10000]})  # Large context for 235B
+        # Generate using Qwen3-Next
+        result = self.llm.generate(prompt, max_new_tokens=512, temperature=0.1)
         
-        # Parse JSON with simple validation
+        # Parse JSON
         topics = self._parse_json_array(result, "topic discovery")
         
         if not topics or len(topics) < 3:
@@ -316,14 +363,11 @@ JSON array:"""
         return topics
     
     def extract_topic_updates(self, topic: str, max_retries: int = 2) -> List[str]:
-        """
-        Extract updates for a topic with retry logic.
-        Large models are reliable, but retries ensure robustness.
-        """
+        """Extract updates for a topic with retry logic."""
         logger.info(f"Extracting updates for topic: {topic}")
         
         retriever = self.vector_store.as_retriever(
-            search_kwargs={"k": 30}  # More documents for comprehensive extraction
+            search_kwargs={"k": 30}
         )
         
         # Enhanced search with multiple queries
@@ -350,19 +394,17 @@ JSON array:"""
             return []
         
         all_updates = []
-        batch_size = 5  # Larger batches for 235B
+        batch_size = 5
         
         for i in range(0, min(len(all_docs), 20), batch_size):
             batch_docs = all_docs[i:i + batch_size]
             context = "\n\n---\n\n".join([doc.page_content for doc in batch_docs])
             
-            # Clean extraction prompt for large model
-            extraction_prompt = PromptTemplate(
-                input_variables=["topic", "context"],
-                template="""Extract all relevant facts and information about "{topic}" from the following text.
+            # Create extraction prompt
+            prompt = f"""Extract all relevant facts and information about "{topic}" from the following text.
 
 Text:
-{context}
+{context[:8000]}
 
 Return a JSON array where each element is a specific fact or piece of information about "{topic}".
 Each fact should be a complete, standalone statement.
@@ -374,20 +416,17 @@ Example format:
 If no relevant information is found, return an empty array: []
 
 JSON array:"""
-            )
             
             # Try extraction with retries
             for attempt in range(max_retries):
                 try:
-                    extraction_chain = extraction_prompt | self.llm | StrOutputParser()
-                    result = extraction_chain.invoke({"topic": topic, "context": context[:8000]})
-                    
+                    result = self.llm.generate(prompt, max_new_tokens=1024, temperature=0.1)
                     batch_updates = self._parse_json_array(result, f"extraction batch {i//batch_size}")
                     
                     if batch_updates:
                         all_updates.extend(batch_updates)
                         logger.info(f"Batch {i//batch_size}: extracted {len(batch_updates)} updates")
-                        break  # Success, no need to retry
+                        break
                     elif attempt < max_retries - 1:
                         logger.warning(f"Batch {i//batch_size}: empty result, retrying...")
                         continue
@@ -403,10 +442,7 @@ JSON array:"""
         return all_updates
     
     def _parse_json_array(self, response: str, context: str = "") -> List[str]:
-        """
-        Parse JSON array from LLM response.
-        With 235B model, this should work 95%+ of the time.
-        """
+        """Parse JSON array from LLM response."""
         try:
             response = response.strip()
             
@@ -448,9 +484,7 @@ JSON array:"""
             return []
     
     def deduplicate_updates(self, updates: List[str]) -> List[str]:
-        """
-        Deduplicate updates using LLM (works well with 235B).
-        """
+        """Deduplicate updates using LLM."""
         if not updates:
             return []
         
@@ -462,30 +496,24 @@ JSON array:"""
         
         logger.info(f"Deduplicating {len(updates)} updates using LLM...")
         
-        # For large update lists, process in batches
+        # For large update lists, just use simple dedup
         if len(updates) > 20:
-            # Simple Python deduplication for very large lists
-            return updates[:20]  # Keep top 20
+            return updates[:20]
         
         # Use LLM for semantic deduplication
         updates_str = json.dumps(updates, indent=2)
         
-        dedup_prompt = PromptTemplate(
-            input_variables=["updates"],
-            template="""Remove duplicate and semantically similar items from the following list.
+        prompt = f"""Remove duplicate and semantically similar items from the following list.
 Keep the most informative and complete version of each unique piece of information.
 
 List:
-{updates}
+{updates_str}
 
 Return a JSON array with only unique items. Return ONLY the JSON array, nothing else.
 
 JSON array:"""
-        )
         
-        dedup_chain = dedup_prompt | self.llm | StrOutputParser()
-        result = dedup_chain.invoke({"updates": updates_str})
-        
+        result = self.llm.generate(prompt, max_new_tokens=1024, temperature=0.1)
         deduplicated = self._parse_json_array(result, "deduplication")
         
         if deduplicated and len(deduplicated) > 0:
@@ -508,7 +536,7 @@ JSON array:"""
         # Executive summary
         doc.add_heading("Executive Summary", 1)
         total_updates = sum(len(updates) for updates in compiled_data.values())
-        summary = f"This report consolidates information from multiple PDF documents across {len(compiled_data)} main topics, extracting {total_updates} unique data points using Qwen3-235B and Qwen3-Embedding-8B models."
+        summary = f"This report consolidates information from multiple PDF documents across {len(compiled_data)} main topics, extracting {total_updates} unique data points using Qwen3-Next-80B and Qwen3-Embedding-8B models."
         doc.add_paragraph(summary)
         doc.add_paragraph()
         
@@ -530,7 +558,7 @@ JSON array:"""
         doc.add_heading("Report Metadata", 2)
         doc.add_paragraph(f"Generated using RAG pipeline")
         doc.add_paragraph(f"Embedding Model: Qwen3-Embedding-8B")
-        doc.add_paragraph(f"Language Model: Qwen3-235B")
+        doc.add_paragraph(f"Language Model: Qwen3-Next-80B-A3B-Instruct")
         doc.add_paragraph(f"Total topics processed: {len(compiled_data)}")
         doc.add_paragraph(f"Total unique updates: {total_updates}")
         
@@ -543,7 +571,7 @@ JSON array:"""
         
         # Setup models
         self.setup_embeddings()
-        self.setup_llm(quantization="4bit")  # Use 4bit for 235B
+        self.setup_llm()
         
         # Ingest documents
         if not self.ingest_and_index_documents():
@@ -576,7 +604,7 @@ JSON array:"""
         print("PIPELINE EXECUTION SUMMARY")
         print("="*60)
         print(f"Embedding Model: Qwen3-Embedding-8B")
-        print(f"Language Model: Qwen3-235B")
+        print(f"Language Model: Qwen3-Next-80B-A3B-Instruct")
         print(f"Topics discovered: {len(topics)}")
         for topic, updates in compiled_data.items():
             print(f"  - {topic}: {len(updates)} updates")
@@ -601,7 +629,17 @@ def main():
         return
     
     print(f"Found {len(pdf_files)} PDF files to process")
-    print("Using Qwen3-Embedding-8B + Qwen3-235B models")
+    print("Using Qwen3-Embedding-8B + Qwen3-Next-80B-A3B-Instruct models")
+    
+    # Print GPU information
+    if torch.cuda.is_available():
+        num_gpus = torch.cuda.device_count()
+        print(f"\nDetected {num_gpus} GPU(s):")
+        for i in range(num_gpus):
+            gpu_name = torch.cuda.get_device_name(i)
+            gpu_mem = torch.cuda.get_device_properties(i).total_memory / 1e9
+            print(f"  GPU {i}: {gpu_name} ({gpu_mem:.1f} GB)")
+        print()
     
     pipeline = RAGPipeline(source_dir=source_dir)
     
