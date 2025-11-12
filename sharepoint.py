@@ -1,25 +1,4 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 
-"""
-auto_report.py
---------------
-End-to-end, multi-pass RAG pipeline that:
-1) Ingests & indexes a large directory of PDFs into Chroma (custom Qwen embeddings).
-2) Uses a local 4-bit Qwen3-1.7B (transformers + bitsandbytes) wrapped in LangChain.
-3) Pass 1: Dynamically discovers 5–7 main topics from a broad sample of the corpus.
-4) Pass 2: For each topic, retrieves relevant chunks and extracts key bullet points (JSON list).
-5) Pass 3: LLM-based consolidation to deduplicate/merge semantically identical bullets (JSON list).
-6) Generates a single structured .docx report.
-
-Strict constraints satisfied:
-- Generator LLM: Qwen/Qwen3-1.7B via transformers, 4-bit bitsandbytes, wrapped by HuggingFacePipeline.
-- Embeddings: Qwen/Qwen3-Embedding-0.6B via a CUSTOM LangChain Embeddings class.
-- Anti-hallucination: Prompts *explicitly* force “ONLY use provided context” and return [] if nothing found.
-
-Usage:
-    python auto_report.py --source ./source_pdfs --out Consolidated_Report.docx
-"""
 
 import os
 import sys
@@ -27,7 +6,7 @@ import json
 import argparse
 import random
 import warnings
-from typing import List, Dict, Any, Iterable, Optional
+from typing import List, Dict, Any, Optional
 
 import torch
 import torch.nn.functional as F
@@ -90,14 +69,12 @@ class CustomQwenEmbeddings(Embeddings):
         self.batch_size = batch_size
 
         if torch_dtype is None:
-            # Prefer bfloat16 if supported on GPU; otherwise float16 on GPU; else float32 on CPU
             if torch.cuda.is_available():
                 torch_dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
             else:
                 torch_dtype = torch.float32
         self.torch_dtype = torch_dtype
 
-        # Qwen embedding model loads with trust_remote_code=True
         self.tokenizer = AutoTokenizer.from_pretrained(
             self.model_name,
             trust_remote_code=True
@@ -118,11 +95,8 @@ class CustomQwenEmbeddings(Embeddings):
         attention_mask:     [B, L]
         returns:            [B, H]
         """
-        # length per sequence = sum(attention_mask)
         lengths = attention_mask.sum(dim=1)  # [B]
-        # index of last non-pad token: lengths - 1 (clamp >= 0)
         idx = torch.clamp(lengths - 1, min=0).unsqueeze(-1).unsqueeze(-1).expand(-1, 1, last_hidden_states.size(-1))
-        # Gather last token hidden states
         gathered = last_hidden_states.gather(dim=1, index=idx).squeeze(1)  # [B, H]
         return gathered
 
@@ -151,11 +125,7 @@ class CustomQwenEmbeddings(Embeddings):
                 ).to(self.device)
 
                 outputs = self.model(**enc)
-                # Some embedding models expose different attr; fall back to last_hidden_state
-                hidden = getattr(outputs, "last_hidden_state", None)
-                if hidden is None:
-                    hidden = outputs[0]
-
+                hidden = getattr(outputs, "last_hidden_state", outputs[0])
                 pooled = self.last_token_pool(hidden, enc["attention_mask"])  # [B, H]
                 pooled = F.normalize(pooled, p=2, dim=1)
                 all_vecs.extend(pooled.detach().cpu().tolist())
@@ -216,7 +186,6 @@ def build_qwen_generator_4bit(
         task="text-generation",
         model=model,
         tokenizer=tokenizer,
-        # Default gen params; small model, JSON-only outputs; keep conservative.
         max_new_tokens=max_new_tokens,
         temperature=temperature,
         top_p=top_p,
@@ -233,14 +202,12 @@ def safe_parse_json_list(text: str) -> List[str]:
     Extracts the first [...] block and json.loads it. Returns [] on failure.
     """
     try:
-        # Find the first JSON list in the text
         start = text.find("[")
         end = text.rfind("]")
         if start != -1 and end != -1 and end > start:
             snippet = text[start:end + 1].strip()
             data = json.loads(snippet)
             if isinstance(data, list):
-                # Ensure list of strings
                 return [str(x).strip() for x in data if isinstance(x, (str, int, float))]
     except Exception:
         pass
@@ -266,15 +233,25 @@ def join_context(docs: List[Any], max_chars: int = 12000) -> str:
     return "\n\n---\n\n".join(parts)
 
 
+def retrieve_docs(retriever, query: str):
+    """
+    Compatibility helper: use Runnable `.invoke` when available,
+    otherwise fall back to older `.get_relevant_documents`.
+    """
+    if hasattr(retriever, "invoke"):
+        return retriever.invoke(query)
+    if hasattr(retriever, "get_relevant_documents"):
+        return retriever.get_relevant_documents(query)
+    return []
+
+
 # =========================
 # DOCX Generation
 # =========================
 
 def write_docx(compiled_data: Dict[str, List[str]], out_path: str) -> None:
     doc = Document()
-    # Title
     title = doc.add_heading('Consolidated Report', 0)
-    # Subtitle style for consistency
     p = doc.add_paragraph()
     run = p.add_run("Generated by auto_report.py")
     run.italic = True
@@ -335,7 +312,7 @@ def main(args: argparse.Namespace) -> None:
     )
 
     print("Step 2: Creating Chroma vector store ...")
-    # Memory-only store; for persistence, set persist_directory=...
+    # For persistence across runs, set: persist_directory="./chroma_db"
     vectorstore = Chroma.from_documents(documents=docs, embedding=embeddings)
 
     # ---- Step 3: LLM (Qwen3-1.7B 4-bit) & Chains
@@ -347,16 +324,15 @@ def main(args: argparse.Namespace) -> None:
         top_p=0.9,
     )
 
-    retriever = vectorstore.as_retriever(search_kwargs={"k": 12})  # k per topic
+    retriever = vectorstore.as_retriever(search_kwargs={"k": 12})
 
     # ---- Step 4: Dynamic Topic Generation (Pass 1)
     print("Step 4: Generating dynamic topics ...")
-    # Broad sample: use a generic query to fetch diverse chunks, then feed to topic prompt
-    broad_docs = retriever.get_relevant_documents("overall summary of main topics across the corpus")
-    # If that's too narrow, add some random chunks as backup context
+    # Broad sample from retriever, then optionally augment with random chunks
+    broad_docs = retrieve_docs(retriever, "overall summary of main topics across the corpus")
     if len(broad_docs) < 20:
         random_sample = random.sample(docs, min(40, len(docs)))
-        broad_docs = random_sample + broad_docs
+        broad_docs = random_sample + (broad_docs or [])
 
     context_text = join_context(broad_docs, max_chars=12000)
 
@@ -380,7 +356,6 @@ def main(args: argparse.Namespace) -> None:
     )
 
     dynamic_topics_list: List[str] = topic_chain.invoke(context_text)
-    # Fallback if empty: propose generic buckets
     if not dynamic_topics_list:
         warnings.warn("Topic discovery returned empty list; falling back to generic topics.")
         dynamic_topics_list = [
@@ -414,7 +389,6 @@ def main(args: argparse.Namespace) -> None:
         )
     )
 
-    # Dedicated chains for Pass 2 and Pass 3
     extract_chain = (
         {"topic": lambda x: x["topic"], "context": lambda x: x["context"]}
         | extract_prompt
@@ -433,13 +407,12 @@ def main(args: argparse.Namespace) -> None:
 
     for topic in tqdm(dynamic_topics_list, desc="Topics"):
         # A) Retrieve
-        retrieved_docs = retriever.get_relevant_documents(topic)
+        retrieved_docs = retrieve_docs(retriever, topic)
         ctx = join_context(retrieved_docs, max_chars=10000)
 
         # B) Extract
         raw_items: List[str] = extract_chain.invoke({"topic": topic, "context": ctx})
 
-        # If model returns empty, store [] immediately
         if not raw_items:
             compiled_data[topic] = []
             continue
@@ -448,7 +421,6 @@ def main(args: argparse.Namespace) -> None:
         normalized = []
         for r in raw_items:
             s = str(r).strip()
-            # Clean trailing punctuation & whitespace
             if s.endswith((".", ";", ",")):
                 s = s[:-1].strip()
             if s:
@@ -457,7 +429,6 @@ def main(args: argparse.Namespace) -> None:
         # C) LLM Deduplication / Consolidation
         final_items = dedupe_chain.invoke(json.dumps(normalized, ensure_ascii=False))
 
-        # Fallback: if empty after LLM dedupe, at least unique set locally
         if not final_items:
             final_items = sorted(set(normalized))
 
@@ -475,4 +446,3 @@ if __name__ == "__main__":
     parser.add_argument("--out", type=str, default="Consolidated_Report.docx", help="Output DOCX filename.")
     args = parser.parse_args()
     main(args)
-    
