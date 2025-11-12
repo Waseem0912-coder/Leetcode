@@ -1,3 +1,10 @@
+#!/usr/bin/env python3
+"""
+auto_report_compatible.py - Multi-Pass RAG Pipeline with LangChain version compatibility
+
+This version handles different LangChain module structures for better compatibility.
+"""
+
 import os
 import json
 import torch
@@ -321,7 +328,7 @@ class RAGPipeline:
 
         # Get a broad sample of documents
         sample_query = "main topics subjects themes content areas discussed"
-        sample_docs = retriever.get_relevant_documents(sample_query)
+        sample_docs = retriever.invoke(sample_query)
 
         # Combine context
         context = "\n\n".join([doc.page_content for doc in sample_docs])
@@ -393,7 +400,7 @@ Topics:"""
         )
 
         # Retrieve relevant documents for this topic
-        retrieved_docs = retriever.get_relevant_documents(topic)
+        retrieved_docs = retriever.invoke(topic)
 
         if not retrieved_docs:
             logger.warning(f"No documents found for topic: {topic}")
