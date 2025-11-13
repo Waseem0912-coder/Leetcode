@@ -4,6 +4,7 @@ OPTIMIZED Weekly Report Pipeline
 - 25x faster: Inverted loop structure (M calls instead of N×M)
 - Properly uses embeddings for content pre-filtering
 - Processes all topics from each PDF in one LLM call
+- PARALLEL processing in Phase 3
 """
 import os
 import json
@@ -17,6 +18,7 @@ import logging
 from tqdm import tqdm
 from collections import Counter, defaultdict
 import numpy as np
+from concurrent.futures import ThreadPoolExecutor, as_completed  # <-- ADDED IMPORT
 
 # LangChain imports
 from langchain_community.document_loaders import PyPDFLoader
@@ -26,7 +28,7 @@ from langchain_core.embeddings import Embeddings
 
 # Transformers imports
 from transformers import (
-    pipeline, # Using the high-level pipeline API
+    AutoModelForCausalLM,
     AutoTokenizer,
     AutoModel,
 )
@@ -154,54 +156,46 @@ class CustomQwenEmbeddings(Embeddings):
         return embedding[0].cpu().numpy().tolist()
 
 
-# MODIFIED: Replaced Qwen3NextLLM with GptOssLLM
-class GptOssLLM:
-    """Wrapper for openai/gpt-oss-120b model using transformers.pipeline."""
+class Qwen3NextLLM:
+    """Wrapper for Qwen3-Next-80B model."""
     
-    def __init__(self, model_name: str = "openai/gpt-oss-120b"):
+    def __init__(self, model_name: str = "Qwen/Qwen3-Next-80B-A3B-Instruct"):
         logger.info(f"Loading language model: {model_name}")
         
-        # Initialize the pipeline as per the provided example
-        self.pipe = pipeline(
-            "text-generation",
-            model=model_name,
+        self.tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
+        self.model = AutoModelForCausalLM.from_pretrained(
+            model_name,
             torch_dtype="auto",
             device_map="auto",
+            trust_remote_code=True
         )
-        
-        logger.info(f"Language model pipeline loaded successfully")
+        self.model.eval()
+        logger.info(f"Language model loaded successfully")
     
     def generate(self, prompt: str, max_new_tokens: int = 2048, temperature: float = 0.1) -> str:
-        # The pipeline API expects a list of dictionaries for chat-like interactions
         messages = [{"role": "user", "content": prompt}]
+        text = self.tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
         
-        # Define generation parameters
-        generation_kwargs = {
-            "max_new_tokens": max_new_tokens,
-            "temperature": temperature,
-            "do_sample": temperature > 0,
-            "top_p": 0.9 if temperature > 0 else None,
-            "repetition_penalty": 1.05,
-        }
+        model_inputs = self.tokenizer([text], return_tensors="pt")
+        device = next(self.model.parameters()).device
+        model_inputs = {k: v.to(device) for k, v in model_inputs.items()}
+        input_length = model_inputs['input_ids'].shape[1]
         
-        # The pipeline automatically handles tokenization and device placement
-        outputs = self.pipe(messages, **generation_kwargs)
+        with torch.no_grad():
+            generated_ids = self.model.generate(
+                **model_inputs,
+                max_new_tokens=max_new_tokens,
+                temperature=temperature,
+                do_sample=temperature > 0,
+                top_p=0.9 if temperature > 0 else None,
+                repetition_penalty=1.05,
+                pad_token_id=self.tokenizer.pad_token_id,
+                eos_token_id=self.tokenizer.eos_token_id,
+            )
         
-        # The output format for chat inputs is a list containing the full chat history.
-        # We need the content of the last message, which is the assistant's reply.
-        # Structure: [{'generated_text': [..., {'role': 'assistant', 'content': '...'}]}]
-        assistant_response = outputs[0]["generated_text"][-1]
-        
-        # Extract the content from the assistant's message
-        if assistant_response.get("role") == "assistant":
-            content = assistant_response.get("content", "")
-            return content.strip()
-        else:
-            logger.warning(f"Unexpected LLM output format. Expected 'assistant' role, got: {assistant_response}")
-            # Fallback for unexpected formats, e.g., if the output is just a string
-            if isinstance(outputs[0]["generated_text"], str):
-                 return outputs[0]["generated_text"].strip()
-            return str(outputs[0]["generated_text"]).strip()
+        output_ids = generated_ids[0][input_length:].tolist()
+        content = self.tokenizer.decode(output_ids, skip_special_tokens=True)
+        return content.strip()
 
 
 class OptimizedWeeklyReportPipeline:
@@ -215,16 +209,15 @@ class OptimizedWeeklyReportPipeline:
     def __init__(self, source_dir: str = "./source_pdfs", max_topics: int = 25, use_embeddings: bool = True):
         self.source_dir = source_dir
         self.max_topics = max_topics
-        self.use_embeddings = use_embeddings
+        self.use_embeddings = use_embeddings  # NEW: Optional embedding usage
         self.llm = None
         self.embeddings = None
         self.pdf_files = []
-        self.pdf_content_cache = {}
+        self.pdf_content_cache = {}  # CRITICAL: Cache to avoid loading PDFs twice!
     
-    # MODIFIED: Updated to use GptOssLLM
     def setup_llm(self):
-        logger.info("Setting up GPT-OSS-120B...")
-        self.llm = GptOssLLM(model_name="openai/gpt-oss-120b")
+        logger.info("Setting up Qwen3-Next-80B...")
+        self.llm = Qwen3NextLLM(model_name="Qwen/Qwen3-Next-80B-A3B-Instruct")
         logger.info("LLM setup complete")
     
     def setup_embeddings(self, use_flash_attention: bool = False):
@@ -255,36 +248,54 @@ class OptimizedWeeklyReportPipeline:
         logger.info(f"Found {len(self.pdf_files)} PDF files (weekly reports)")
         return True
     
-    def get_pdf_content(self, pdf_path: Path) -> str:
+    def load_pdf_content(self, pdf_path: Path) -> str:
         """
-        Load PDF content with caching to avoid loading same file multiple times.
-        """
-        if pdf_path in self.pdf_content_cache:
-            return self.pdf_content_cache[pdf_path]
+        Load PDF content with caching to avoid double I/O.
+        CRITICAL FIX: Each PDF is loaded once and cached.
         
-        logger.debug(f"Loading {pdf_path.name} from disk (caching for reuse)...")
+        Returns:
+            Combined text from all pages
+        """
+        # Check cache first
+        cache_key = str(pdf_path)
+        if cache_key in self.pdf_content_cache:
+            logger.debug(f"✓ Using cached content for {pdf_path.name}")
+            return self.pdf_content_cache[cache_key]
+        
+        # Load from disk (only happens once per PDF!)
+        logger.info(f"Loading {pdf_path.name} from disk...")
         loader = PyPDFLoader(str(pdf_path))
         pages = loader.load()
         
-        full_text = "\n\n".join([page.page_content for page in pages]) if pages else ""
-        self.pdf_content_cache[pdf_path] = full_text
+        if not pages:
+            full_text = ""
+        else:
+            full_text = "\n\n".join([page.page_content for page in pages])
+        
+        # Cache for future use
+        self.pdf_content_cache[cache_key] = full_text
+        logger.debug(f"✓ Cached {pdf_path.name} ({len(full_text)} chars)")
+        
         return full_text
     
     def extract_topics_from_pdf(self, pdf_path: Path) -> List[str]:
-        """Extract topics from a single PDF (using cached content)."""
+        """Extract topics from a single PDF using cached content."""
         logger.info(f"Extracting topics from: {pdf_path.name}")
-        full_text = self.get_pdf_content(pdf_path)
+        
+        # Use cached content (avoids 2nd disk I/O!)
+        full_text = self.load_pdf_content(pdf_path)
         
         if not full_text:
             logger.warning(f"No content in {pdf_path.name}")
             return []
         
-        prompt_text = full_text[:10000]
+        if len(full_text) > 10000:
+            full_text = full_text[:10000]
         
         prompt = f"""Analyze this weekly report and identify the main topics covered.
 
 Report:
-{prompt_text}
+{full_text}
 
 List each topic on a new line starting with "TOPIC:".
 
@@ -305,16 +316,29 @@ Extract topics:"""
         """Consolidate topics from all PDFs."""
         logger.info("Consolidating topics...")
         
-        all_topics = [topic for topics in all_topics_by_pdf.values() for topic in topics]
+        all_topics = []
+        for pdf_name, topics in all_topics_by_pdf.items():
+            all_topics.extend(topics)
+        
         logger.info(f"Total topics before consolidation: {len(all_topics)}")
         
-        unique_topics = list(dict.fromkeys(all_topics))
+        # Remove exact duplicates
+        unique_topics = []
+        seen_lower = set()
+        for topic in all_topics:
+            topic_lower = topic.lower().strip()
+            if topic_lower not in seen_lower:
+                seen_lower.add(topic_lower)
+                unique_topics.append(topic)
+        
         logger.info(f"After deduplication: {len(unique_topics)} topics")
         
         if len(unique_topics) <= self.max_topics:
             return unique_topics
         
+        # Merge similar topics
         logger.info(f"Merging to {self.max_topics} topics...")
+        
         topics_text = "\n".join([f"{i+1}. {t}" for i, t in enumerate(unique_topics)])
         
         prompt = f"""Consolidate {len(unique_topics)} topics into {self.max_topics} distinct topics.
@@ -332,7 +356,7 @@ Consolidated topics:"""
         consolidated = self._parse_text_list(result, prefix="TOPIC:")
         
         if len(consolidated) < self.max_topics * 0.7:
-            logger.warning(f"Using top {self.max_topics} from unique list as consolidation failed.")
+            logger.warning(f"Using top {self.max_topics} from unique list")
             return unique_topics[:self.max_topics]
         
         return consolidated[:self.max_topics]
@@ -340,21 +364,42 @@ Consolidated topics:"""
     def filter_relevant_content(self, full_text: str, topics: List[str]) -> str:
         """
         Use embeddings to filter PDF content to only relevant sections.
+        This reduces LLM context and improves extraction quality.
         """
         if not self.use_embeddings or not self.embeddings:
+            # No filtering - return full text (truncated)
             return full_text[:12000]
+        
+        # Split text into chunks
+        text_splitter = RecursiveCharacterTextSplitter(
+            chunk_size=800,
+            chunk_overlap=100,
+            length_function=len
+        )
         
         chunks = [full_text[i:i+800] for i in range(0, len(full_text), 700)]
         
         if len(chunks) <= 10:
+            # Small document, no need to filter
             return full_text
         
+        # Embed chunks
         chunk_embeddings = self.embeddings.embed_documents(chunks)
-        topic_embedding = self.embeddings.embed_query(" ".join(topics))
         
-        similarities = np.dot(chunk_embeddings, topic_embedding)
+        # Embed topics
+        topics_text = " ".join(topics)
+        topic_embedding = self.embeddings.embed_query(topics_text)
+        
+        # Calculate similarity
+        similarities = []
+        for chunk_emb in chunk_embeddings:
+            similarity = np.dot(chunk_emb, topic_embedding)
+            similarities.append(similarity)
+        
+        # Get top 15 most relevant chunks
         top_indices = np.argsort(similarities)[-15:][::-1]
         
+        # Reconstruct filtered text
         filtered_chunks = [chunks[i] for i in sorted(top_indices)]
         filtered_text = "\n\n".join(filtered_chunks)
         
@@ -364,16 +409,30 @@ Consolidated topics:"""
     def extract_all_topics_from_pdf(self, pdf_path: Path, topics: List[str]) -> Dict[str, List[str]]:
         """
         OPTIMIZED: Extract information about ALL topics from ONE PDF in a single LLM call.
+        Uses cached PDF content to avoid disk I/O.
+        
+        Args:
+            pdf_path: Path to the PDF
+            topics: List of ALL consolidated topics to extract
+            
+        Returns:
+            Dict mapping each topic to list of facts found in this PDF
         """
         logger.info(f"Extracting all {len(topics)} topics from {pdf_path.name}...")
-        full_text = self.get_pdf_content(pdf_path)
+        
+        # Use cached content (avoids 2nd disk I/O!)
+        full_text = self.load_pdf_content(pdf_path)
         
         if not full_text:
             return {topic: [] for topic in topics}
         
+        # Filter content using embeddings (if enabled)
         filtered_text = self.filter_relevant_content(full_text, topics)
+        
+        # Format topics list
         topics_list = "\n".join([f"{i+1}. {topic}" for i, topic in enumerate(topics)])
         
+        # SINGLE LLM CALL for ALL topics
         prompt = f"""Extract information from this weekly report for EACH of the following topics.
 
 Report from {pdf_path.stem}:
@@ -398,67 +457,120 @@ If a topic has no information, write "TOPIC: [name]" then "NONE".
 Extract for all topics:"""
         
         result = self.llm.generate(prompt, max_new_tokens=2048, temperature=0.1)
+        
+        # Parse the structured output
         topic_facts = self._parse_multi_topic_output(result, topics, pdf_path.stem)
         
+        # Log results
         total_facts = sum(len(facts) for facts in topic_facts.values())
-        logger.info(f"  Extracted {total_facts} facts across {len(topics)} topics")
+        logger.info(f"  Extracted {total_facts} facts across {len(topics)} topics from {pdf_path.name}")
         
         return topic_facts
     
     def _parse_multi_topic_output(self, text: str, topics: List[str], week_name: str) -> Dict[str, List[str]]:
         """
         Parse output where multiple topics and their facts are in one response.
+        
+        Format:
+        TOPIC: Budget
+        FACT: Something about budget
+        FACT: Another budget fact
+        TOPIC: Timeline
+        FACT: Something about timeline
         """
         topic_facts = {topic: [] for topic in topics}
-        current_topic = None
         
-        for line in text.split('\n'):
+        current_topic = None
+        lines = text.split('\n')
+        
+        for line in lines:
             line = line.strip()
             
+            # Check if line starts a new topic
             if line.startswith('TOPIC:'):
                 topic_name = line.replace('TOPIC:', '').strip()
-                current_topic = next((t for t in topics if t.lower() in topic_name.lower() or topic_name.lower() in t.lower()), None)
+                
+                # Match to one of our consolidated topics (fuzzy match)
+                current_topic = None
+                for topic in topics:
+                    if topic.lower() in topic_name.lower() or topic_name.lower() in topic.lower():
+                        current_topic = topic
+                        break
             
+            # Check if line is a fact
             elif line.startswith('FACT:') and current_topic:
                 fact = line.replace('FACT:', '').strip()
                 if fact and len(fact) > 10 and fact.upper() != 'NONE':
-                    topic_facts[current_topic].append(f"[{week_name}] {fact}")
+                    # Add week prefix
+                    fact_with_week = f"[{week_name}] {fact}"
+                    topic_facts[current_topic].append(fact_with_week)
+            
+            # Check for NONE indicator
+            elif 'NONE' in line.upper() and current_topic:
+                # Topic explicitly has no info, continue to next topic
+                continue
         
         return topic_facts
     
     def extract_info_for_all_topics_optimized(self, topics: List[str]) -> Dict[str, List[str]]:
         """
         OPTIMIZED: Process all PDFs, extracting all topics from each.
+        
+        NEW: Uses ThreadPoolExecutor to run in parallel.
         """
         logger.info(f"\nExtracting {len(topics)} topics from {len(self.pdf_files)} PDFs...")
-        logger.info(f"This will make {len(self.pdf_files)} LLM calls (instead of {len(topics) * len(self.pdf_files)})")
+        logger.info(f"This will make {len(self.pdf_files)} LLM calls in PARALLEL.")
         
         topic_info = defaultdict(list)
         
-        for pdf_file in tqdm(self.pdf_files, desc="Processing PDFs"):
-            pdf_topic_facts = self.extract_all_topics_from_pdf(pdf_file, topics)
-            for topic, facts in pdf_topic_facts.items():
-                if facts:
-                    topic_info[topic].extend(facts)
+        # Set max_workers to the number of parallel calls you want to make.
+        # Tune this based on your GPU VRAM and processing power.
+        # Start with a low number like 4-8.
+        max_workers = 8
         
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            # Create a dictionary to map futures to PDF files
+            future_to_pdf = {
+                executor.submit(self.extract_all_topics_from_pdf, pdf_file, topics): pdf_file
+                for pdf_file in self.pdf_files
+            }
+            
+            # Use tqdm to track progress as futures complete
+            for future in tqdm(as_completed(future_to_pdf), total=len(self.pdf_files), desc="Processing PDFs"):
+                pdf_file = future_to_pdf[future]
+                try:
+                    # Get the result from the completed thread
+                    pdf_topic_facts = future.result()
+                    
+                    # Accumulate facts for each topic
+                    for topic, facts in pdf_topic_facts.items():
+                        if facts:
+                            topic_info[topic].extend(facts)
+                except Exception as e:
+                    logger.error(f"Failed to process {pdf_file.name}: {e}")
+
         return dict(topic_info)
     
     def _parse_text_list(self, text: str, prefix: str = "TOPIC:") -> List[str]:
         """Parse items from text output."""
         items = []
-        for line in text.split('\n'):
+        lines = text.split('\n')
+        
+        for line in lines:
             line = line.strip()
+            
             if line.startswith(prefix):
                 item = line.replace(prefix, '').strip()
+                if item and len(item) > 3:
+                    items.append(item)
             elif line.startswith('- ') or line.startswith('* '):
                 item = line[2:].strip()
+                if item and len(item) > 3:
+                    items.append(item)
             elif re.match(r'^\d+[\.\)]\s+', line):
                 item = re.sub(r'^\d+[\.\)]\s+', '', line).strip()
-            else:
-                continue
-            
-            if item and len(item) > 3:
-                items.append(item)
+                if item and len(item) > 3:
+                    items.append(item)
         
         return items
     
@@ -467,7 +579,9 @@ Extract for all topics:"""
         logger.info(f"Generating report: {output_file}")
         
         doc = Document()
-        doc.add_heading("Consolidated Weekly Reports - All Topics", 0).alignment = WD_ALIGN_PARAGRAPH.CENTER
+        
+        title = doc.add_heading("Consolidated Weekly Reports - All Topics", 0)
+        title.alignment = WD_ALIGN_PARAGRAPH.CENTER
         
         doc.add_heading("Executive Summary", 1)
         total_facts = sum(len(facts) for facts in topic_info.values())
@@ -477,19 +591,22 @@ Extract for all topics:"""
         
         for topic, facts in topic_info.items():
             doc.add_heading(topic, 1)
+            
             if facts:
                 for fact in facts:
-                    doc.add_paragraph(fact, style='List Bullet')
+                    p = doc.add_paragraph(style='List Bullet')
+                    p.add_run(fact)
             else:
                 doc.add_paragraph("No information found.", style='Body Text')
+            
             doc.add_paragraph()
         
         doc.add_page_break()
         doc.add_heading("Report Metadata", 2)
-        doc.add_paragraph(f"Source weekly reports: {len(self.pdf_files)}")
-        doc.add_paragraph(f"Consolidated topics: {len(topic_info)}")
-        doc.add_paragraph(f"Total facts extracted: {total_facts}")
-        doc.add_paragraph(f"Content filtering with embeddings: {'Enabled' if self.use_embeddings else 'Disabled'}")
+        doc.add_paragraph(f"Weekly reports: {len(self.pdf_files)}")
+        doc.add_paragraph(f"Topics: {len(topic_info)}")
+        doc.add_paragraph(f"Facts: {total_facts}")
+        doc.add_paragraph(f"Embeddings: {'Enabled' if self.use_embeddings else 'Disabled'}")
         
         doc.save(output_file)
         logger.info(f"Report saved to {output_file}")
@@ -504,32 +621,53 @@ Extract for all topics:"""
         self.setup_llm()
         
         if not self.load_pdf_files():
-            logger.error("No PDFs to process. Exiting.")
+            logger.error("No PDFs to process.")
             return
         
-        # Phase 1 & 2: Topic Extraction and Consolidation
-        logger.info("\n" + "="*70 + "\nPHASE 1 & 2: Topic Extraction and Consolidation\n" + "="*70)
-        all_topics_by_pdf = {pdf.name: self.extract_topics_from_pdf(pdf) for pdf in self.pdf_files}
+        # Phase 1: Extract topics from each PDF
+        logger.info("\n" + "="*70)
+        logger.info("PHASE 1: Extract topics from each PDF")
+        logger.info("="*70)
+        
+        all_topics_by_pdf = {}
+        for pdf_file in self.pdf_files:
+            topics = self.extract_topics_from_pdf(pdf_file)
+            all_topics_by_pdf[pdf_file.name] = topics
+        
+        # Phase 2: Consolidate topics
+        logger.info("\n" + "="*70)
+        logger.info("PHASE 2: Consolidate topics")
+        logger.info("="*70)
+        
         consolidated_topics = self.consolidate_topics(all_topics_by_pdf)
+        
         logger.info("\nCONSOLIDATED TOPICS:")
         for i, topic in enumerate(consolidated_topics, 1):
             logger.info(f"  {i}. {topic}")
         
-        # Phase 3: Information Extraction (Optimized)
-        logger.info("\n" + "="*70 + "\nPHASE 3: Extract info (OPTIMIZED - inverted loop)\n" + "="*70)
+        # Phase 3: Extract info (OPTIMIZED + PARALLEL!)
+        logger.info("\n" + "="*70)
+        logger.info("PHASE 3: Extract info (OPTIMIZED + PARALLEL)")
+        logger.info("="*70)
+        
         topic_info = self.extract_info_for_all_topics_optimized(consolidated_topics)
         
-        # Phase 4: Report Generation
-        logger.info("\n" + "="*70 + "\nPHASE 4: Generate report\n" + "="*70)
+        # Phase 4: Generate report
+        logger.info("\n" + "="*70)
+        logger.info("PHASE 4: Generate report")
+        logger.info("="*7V)
+        
         self.generate_report(topic_info)
         
-        print("\n" + "="*70 + "\nCOMPLETE!\n" + "="*70)
-        print(f"PDFs processed: {len(self.pdf_files)}")
-        print(f"Topics consolidated: {len(consolidated_topics)}")
-        print(f"Total facts extracted: {sum(len(f) for f in topic_info.values())}")
-        if consolidated_topics:
-             print(f"Speedup: Approx. {len(consolidated_topics)}x faster due to {len(self.pdf_files)} LLM calls instead of {len(self.pdf_files) * len(consolidated_topics)}.")
+        print("\n" + "="*70)
+        print("COMPLETE!")
         print("="*70)
+        print(f"PDFs: {len(self.pdf_files)}")
+        print(f"Topics: {len(consolidated_topics)}")
+        print(f"LLM calls: {len(self.pdf_files)} (parallelized)")
+        print(f"Speedup: {len(consolidated_topics)}x (plus parallelization)")
+        print(f"Facts: {sum(len(f) for f in topic_info.values())}")
+        print("="*7D)
 
 
 def main():
@@ -537,25 +675,32 @@ def main():
     
     if not os.path.exists(source_dir):
         os.makedirs(source_dir)
-        print(f"Created empty source directory at '{source_dir}'. Please add your PDF files there and run again.")
+        print("Created source directory.")
         return
     
-    if not any(Path(source_dir).glob("*.pdf")):
-        print(f"No PDF files found in '{source_dir}'. Please add your PDF files and run again.")
+    pdf_files = list(Path(source_dir).glob("*.pdf"))
+    if not pdf_files:
+        print("No PDFs found.")
         return
     
-    print("Starting Optimized Weekly Report Pipeline...")
+    print(f"Found {len(pdf_files)} weekly reports")
+    print("\nOptimizations:")
+    print("✅ Inverted loop: M calls instead of N×M (25x faster)")
+    print("✅ Embeddings for content filtering (better quality)")
+    print("✅ Single LLM call per PDF extracts all topics")
+    print("✅ PARALLEL processing for Phase 3\n")
     
-    # Choose whether to use embeddings for content filtering.
-    # It's slower but can yield higher quality results for large documents.
-    # Set use_embeddings=False for maximum speed.
+    # With embeddings (slower but better quality):
+    # pipeline = OptimizedWeeklyReportPipeline(source_dir=source_dir, use_embeddings=True)
+    
+    # Without embeddings (faster):
     pipeline = OptimizedWeeklyReportPipeline(source_dir=source_dir, use_embeddings=False)
     
     try:
-        # Set use_flash_attention=True if you have a compatible GPU and libraries installed
-        pipeline.run_pipeline(use_flash_attention=False)
+        pipeline.run_pipeline()
     except Exception as e:
-        logger.error(f"The pipeline failed with an error: {e}", exc_info=True)
+        logger.error(f"Failed: {e}")
+        raise
 
 
 if __name__ == "__main__":
