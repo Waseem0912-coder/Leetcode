@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-STREAMLINED: Extract 45 weeks of reports and combine into ONE organized document.
-No unnecessary conversions - just extract, organize, and output.
+Weekly Reports Consolidation with Chunking for Large PDFs
+Handles millions of tokens by processing in manageable chunks.
 """
 import argparse
 from pathlib import Path
@@ -11,6 +11,7 @@ from transformers import AutoTokenizer, AutoModelForCausalLM
 import torch
 import re
 from datetime import datetime
+from typing import List, Tuple
 
 def print_environment_info():
     """Display GPU configuration."""
@@ -32,30 +33,33 @@ def print_environment_info():
     print("=" * 70 + "\n")
 
 
-def load_model(model_id: str = "openai/gpt-oss-120b"):
-    """Load model distributed across all GPUs."""
+def load_model_and_tokenizer(model_id: str = "openai/gpt-oss-120b"):
+    """Load model and tokenizer distributed across all GPUs."""
     print(f"🔧 Loading {model_id}...")
     
     num_gpus = torch.cuda.device_count()
     if num_gpus == 0:
         raise RuntimeError("No CUDA GPUs available")
     
-    # Configure memory per GPU (leave headroom for activations/KV cache)
+    # Configure memory per GPU
     max_memory_per_gpu = {}
     for i in range(num_gpus):
         total_mem = torch.cuda.get_device_properties(i).total_memory / 1e9
-        # For H200 (141GB), reserve 70GB for model, 70GB for operations
-        usable_mem = max(total_mem * 0.5, 60)
+        usable_mem = max(total_mem * 0.5, 60)  # Use 50% for model, leave rest for operations
         max_memory_per_gpu[i] = f"{int(usable_mem)}GiB"
     
     print(f"\n💾 Memory allocation per GPU: {list(max_memory_per_gpu.values())[0]}")
     
+    # Load tokenizer
+    print("📥 Loading tokenizer...")
     tokenizer = AutoTokenizer.from_pretrained(model_id, trust_remote_code=True)
     
+    # Load model
+    print("📥 Loading model...")
     model = AutoModelForCausalLM.from_pretrained(
         model_id,
         torch_dtype=torch.bfloat16,
-        device_map="balanced",  # BALANCED distribution
+        device_map="balanced",
         max_memory=max_memory_per_gpu,
         trust_remote_code=True,
         low_cpu_mem_usage=True,
@@ -72,12 +76,12 @@ def load_model(model_id: str = "openai/gpt-oss-120b"):
         for device, count in sorted(device_counts.items()):
             print(f"  {device}: {count} layers")
     
-    print("\n✅ Model loaded and distributed across all GPUs\n")
+    print("\n✅ Model and tokenizer loaded\n")
     return model, tokenizer
 
 
 def extract_text_from_pdf(pdf_path: Path) -> str:
-    """Extract all text from PDF - simple and direct."""
+    """Extract all text from PDF."""
     print(f"📄 Extracting text from: {pdf_path.name}")
     
     all_text = []
@@ -88,7 +92,6 @@ def extract_text_from_pdf(pdf_path: Path) -> str:
         for i, page in enumerate(pdf.pages, 1):
             page_text = page.extract_text()
             if page_text:
-                # Keep page markers for reference
                 all_text.append(f"\n{'='*70}\nPAGE {i}\n{'='*70}\n")
                 all_text.append(page_text.strip())
             
@@ -102,20 +105,88 @@ def extract_text_from_pdf(pdf_path: Path) -> str:
     return combined_text
 
 
-def generate_text(model, tokenizer, prompt: str, max_new_tokens: int = 16384) -> str:
+def count_tokens(text: str, tokenizer) -> int:
+    """Count tokens in text."""
+    tokens = tokenizer.encode(text, add_special_tokens=True)
+    return len(tokens)
+
+
+def chunk_text_by_tokens(text: str, tokenizer, max_input_tokens: int = 90000) -> List[str]:
+    """
+    Split text into chunks based on token count.
+    Tries to split on week boundaries or page markers for clean breaks.
+    """
+    print(f"\n📦 Chunking text (max {max_input_tokens:,} tokens per chunk)...")
+    
+    # First, try to split by weeks
+    week_pattern = r'\n={70}\nPAGE \d+\n={70}\n'
+    sections = re.split(week_pattern, text)
+    
+    chunks = []
+    current_chunk = []
+    current_tokens = 0
+    
+    for i, section in enumerate(sections):
+        if not section.strip():
+            continue
+            
+        section_tokens = count_tokens(section, tokenizer)
+        
+        # If single section is too large, split it further
+        if section_tokens > max_input_tokens:
+            print(f"   ⚠️  Section {i} has {section_tokens:,} tokens (too large)")
+            # Split by paragraphs
+            paragraphs = section.split('\n\n')
+            for para in paragraphs:
+                para_tokens = count_tokens(para, tokenizer)
+                if current_tokens + para_tokens > max_input_tokens and current_chunk:
+                    # Save current chunk
+                    chunks.append('\n\n'.join(current_chunk))
+                    current_chunk = [para]
+                    current_tokens = para_tokens
+                else:
+                    current_chunk.append(para)
+                    current_tokens += para_tokens
+        else:
+            # Check if adding this section exceeds limit
+            if current_tokens + section_tokens > max_input_tokens and current_chunk:
+                # Save current chunk
+                chunks.append('\n\n'.join(current_chunk))
+                current_chunk = [section]
+                current_tokens = section_tokens
+            else:
+                current_chunk.append(section)
+                current_tokens += section_tokens
+    
+    # Add remaining chunk
+    if current_chunk:
+        chunks.append('\n\n'.join(current_chunk))
+    
+    # Verify chunk sizes
+    print(f"\n   Created {len(chunks)} chunks:")
+    for i, chunk in enumerate(chunks, 1):
+        chunk_tokens = count_tokens(chunk, tokenizer)
+        print(f"   Chunk {i}: {chunk_tokens:,} tokens ({len(chunk):,} chars)")
+    
+    return chunks
+
+
+def generate_text(model, tokenizer, prompt: str, max_new_tokens: int = 5000) -> str:
     """
     Generate text using ALL GPUs properly.
-    No hardcoded cuda:0 - uses model's device map.
     """
     
-    # Tokenize
-    inputs = tokenizer(prompt, return_tensors="pt", truncation=True, max_length=120000)
+    # Tokenize with truncation
+    inputs = tokenizer(
+        prompt, 
+        return_tensors="pt", 
+        truncation=True, 
+        max_length=120000  # Model's context window
+    )
     
-    # Move to the FIRST device in the model's device map (not hardcoded cuda:0)
-    # This finds where the model's first layer actually lives
+    # Get first device dynamically
     first_device = None
     if hasattr(model, 'hf_device_map'):
-        # Get the device of the first layer
         for name, device in model.hf_device_map.items():
             first_device = device
             break
@@ -125,17 +196,22 @@ def generate_text(model, tokenizer, prompt: str, max_new_tokens: int = 16384) ->
     
     inputs = {k: v.to(first_device) for k, v in inputs.items()}
     
-    print(f"   Input tokens: {inputs['input_ids'].shape[1]:,}")
-    print(f"   Max output tokens: {max_new_tokens:,}")
-    print(f"   First layer device: {first_device}")
-    print(f"   Generating across all GPUs...")
+    input_tokens = inputs['input_ids'].shape[1]
     
-    # Generate with proper settings
+    # Check if input fits
+    if input_tokens >= 120000:
+        print(f"   ⚠️  WARNING: Input ({input_tokens:,} tokens) at context limit!")
+    
+    print(f"   Input: {input_tokens:,} tokens")
+    print(f"   Max output: {max_new_tokens:,} tokens")
+    print(f"   Processing on device: {first_device}")
+    
+    # Generate
     with torch.inference_mode():
         outputs = model.generate(
             **inputs,
-            max_new_tokens=max_new_tokens,  # MUCH LARGER - can output ~12k tokens
-            do_sample=False,  # Deterministic
+            max_new_tokens=max_new_tokens,
+            do_sample=False,
             temperature=1.0,
             pad_token_id=tokenizer.eos_token_id,
             eos_token_id=tokenizer.eos_token_id,
@@ -150,25 +226,12 @@ def generate_text(model, tokenizer, prompt: str, max_new_tokens: int = 16384) ->
     return generated_text
 
 
-def consolidate_all_reports(text: str, model, tokenizer) -> str:
-    """
-    ONE consolidated document - organized but keeping all detail.
-    This is the main processing step.
-    """
-    print("🤖 CONSOLIDATING ALL 45 WEEKS...")
-    print("=" * 70)
+def process_chunk(chunk: str, chunk_num: int, total_chunks: int, model, tokenizer, max_new_tokens: int = 5000) -> str:
+    """Process a single chunk with your exact prompt."""
     
-    words = len(text.split())
-    approx_tokens = int(words * 1.3)
-    print(f"Input: ~{approx_tokens:,} tokens")
-    print(f"Context window: ~120,000 tokens\n")
+    print(f"\n🔄 Processing chunk {chunk_num}/{total_chunks}...")
     
-    if approx_tokens > 100000:
-        print("⚠️  Large input - this will take time\n")
-    
-    # THE PROMPT - tells it to organize but keep everything
-    prompt = f"""
-You are analyzing a long text containing ~45 weeks of weekly reports.  
+    prompt = f"""You are analyzing a long text containing ~45 weeks of weekly reports.  
 Each week contains several main bullets (topics/projects) and sub-bullets (details, updates, tasks).  
 Some topics appear in multiple weeks with different updates, some appear only once, and some weeks reset or replace previous information.
 
@@ -185,10 +248,10 @@ INTERNAL REASONING STEPS (DO NOT OUTPUT THESE STEPS)
    - Identify which bullets are main topics (first-level bullets or bolded headers).
    - Identify which bullets are subpoints or child items.
 3. Do NOT normalize, merge, rename, or cluster topics.
-   - If Week 3 says “Offline Monitoring” and Week 7 says “Monitoring Improvements,” treat them as two separate topics even if they seem similar.
+   - If Week 3 says "Offline Monitoring" and Week 7 says "Monitoring Improvements," treat them as two separate topics even if they seem similar.
 4. Do NOT build a cross-week topic timeline.
    - Each week is self-contained.
-   - Simply reconstruct Week 1’s content, then Week 2’s content, etc.
+   - Simply reconstruct Week 1's content, then Week 2's content, etc.
 5. Preserve:
    - All numbers, dates, metrics, names, file paths, schemas, decisions, blockers, achievements.
    - All bullet points and nested bullets.
@@ -199,7 +262,6 @@ INTERNAL REASONING STEPS (DO NOT OUTPUT THESE STEPS)
 
 OUTPUT FORMAT  
 Use the following exact structure:
-
 - `# Week X` for each week  
 - Under each week, use `## <topic name exactly as written>`  
 - Under each topic, use bullet points (`-`) and nested bullets as needed  
@@ -210,29 +272,40 @@ Use the following exact structure:
 
 ADDITIONAL REQUIREMENTS  
 - Output ONLY the final markdown.  
-- NO explanations, NO preamble, NO reasoning.  
+- NO explanations, NO preamble, NO reasoning.
 - No hallucination: use only the information in the provided text.
 
-TEXT TO CONVERT:
-{text}
+TEXT TO CONVERT (CHUNK {chunk_num}/{total_chunks}):
+{chunk}
+
+OUTPUT:
 """
     
-    print("Processing (this may take 5-10 minutes)...")
-    consolidated = generate_text(model, tokenizer, prompt, max_new_tokens=16384)
+    result = generate_text(model, tokenizer, prompt, max_new_tokens)
+    print(f"✅ Chunk {chunk_num} processed ({len(result):,} characters)")
     
-    print(f"\n✅ Generated {len(consolidated):,} characters\n")
-    return consolidated
+    return result
+
+
+def combine_chunks(chunk_results: List[str]) -> str:
+    """Combine processed chunks into final document."""
+    print(f"\n🔗 Combining {len(chunk_results)} chunks...")
+    
+    # Simply concatenate - each chunk should be self-contained weeks
+    combined = "\n\n".join(chunk_results)
+    
+    print(f"✅ Combined into {len(combined):,} characters\n")
+    return combined
 
 
 def markdown_to_docx(markdown_text: str, output_path: Path):
-    """Convert markdown to professional Word document."""
+    """Convert markdown to Word document."""
     print(f"📝 Creating Word document...")
     
     doc = Document()
     
-    # Add title page
-    title = doc.add_heading('Consolidated Weekly Reports', 0)
-    doc.add_paragraph(f'45 Weeks Consolidated')
+    # Title page
+    doc.add_heading('Weekly Reports - Reconstructed', 0)
     doc.add_paragraph(f'Generated: {datetime.now().strftime("%Y-%m-%d %H:%M")}')
     doc.add_page_break()
     
@@ -256,10 +329,18 @@ def markdown_to_docx(markdown_text: str, output_path: Path):
         
         # Bullet points
         elif line.startswith('- ') or line.startswith('* '):
+            # Count indentation
+            indent_level = 0
+            temp_line = line
+            while temp_line.startswith('  '):
+                indent_level += 1
+                temp_line = temp_line[2:]
+            
             content = line.lstrip('- *').strip()
-            # Handle bold text
+            
+            # Handle bold
             if '**' in content:
-                p = doc.add_paragraph(style='List Bullet')
+                p = doc.add_paragraph(style='List Bullet' if indent_level == 0 else 'List Bullet 2')
                 parts = content.split('**')
                 for i, part in enumerate(parts):
                     if i % 2 == 0:
@@ -267,7 +348,8 @@ def markdown_to_docx(markdown_text: str, output_path: Path):
                     else:
                         p.add_run(part).bold = True
             else:
-                doc.add_paragraph(content, style='List Bullet')
+                style = 'List Bullet' if indent_level == 0 else 'List Bullet 2'
+                doc.add_paragraph(content, style=style)
         
         # Numbered lists
         elif re.match(r'^\d+\.\s', line):
@@ -292,15 +374,16 @@ def markdown_to_docx(markdown_text: str, output_path: Path):
 
 
 def main():
-    """Streamlined workflow: Extract → Consolidate → Output"""
+    """Main workflow with chunking support."""
     
     parser = argparse.ArgumentParser(
-        description='Consolidate 45 weeks of reports into one organized document'
+        description='Consolidate weekly reports with automatic chunking for large PDFs'
     )
-    parser.add_argument('--pdf', type=str, required=True, help='Path to PDF with all reports')
+    parser.add_argument('--pdf', type=str, required=True, help='Path to PDF')
     parser.add_argument('--output', type=str, default='./output', help='Output directory')
     parser.add_argument('--model', type=str, default='openai/gpt-oss-120b', help='Model ID')
-    parser.add_argument('--max-tokens', type=int, default=16384, help='Max output tokens (default: 16384)')
+    parser.add_argument('--max-output-tokens', type=int, default=5000, help='Max output tokens per chunk')
+    parser.add_argument('--max-input-tokens', type=int, default=90000, help='Max input tokens per chunk')
     
     args = parser.parse_args()
     
@@ -316,42 +399,83 @@ def main():
     print_environment_info()
     
     print("=" * 70)
-    print("📊 WEEKLY REPORTS CONSOLIDATION - STREAMLINED")
+    print("📊 WEEKLY REPORTS RECONSTRUCTION WITH CHUNKING")
     print("=" * 70)
     print(f"\n📄 Input: {pdf_path}")
-    print(f"📁 Output: {output_dir}\n")
+    print(f"📁 Output: {output_dir}")
+    print(f"⚙️  Max input tokens: {args.max_input_tokens:,}")
+    print(f"⚙️  Max output tokens per chunk: {args.max_output_tokens:,}\n")
     
-    # Load model
-    model, tokenizer = load_model(args.model)
+    # Load model and tokenizer
+    model, tokenizer = load_model_and_tokenizer(args.model)
     
-    # Extract PDF (raw text)
+    # Extract PDF
     raw_text = extract_text_from_pdf(pdf_path)
     
-    # Save raw extraction
+    # Save raw text
     raw_path = output_dir / "01_raw_extracted_text.txt"
     raw_path.write_text(raw_text, encoding='utf-8')
-    print(f"💾 Saved raw text: {raw_path}\n")
+    print(f"💾 Saved: {raw_path}\n")
     
-    # ONE consolidation step - this is where the magic happens
-    consolidated_md = consolidate_all_reports(raw_text, model, tokenizer)
+    # Count tokens in full text
+    print("🔢 Counting tokens in full text...")
+    total_tokens = count_tokens(raw_text, tokenizer)
+    print(f"   Total tokens: {total_tokens:,}")
+    print(f"   Total characters: {len(raw_text):,}")
+    print(f"   Total words: {len(raw_text.split()):,}\n")
     
-    # Save markdown version
-    md_path = output_dir / "02_consolidated_report.md"
-    md_path.write_text(consolidated_md, encoding='utf-8')
-    print(f"💾 Saved markdown: {md_path}\n")
+    # Check if we need chunking
+    if total_tokens > args.max_input_tokens:
+        print(f"⚠️  Input ({total_tokens:,} tokens) exceeds limit ({args.max_input_tokens:,} tokens)")
+        print(f"   Will process in chunks...\n")
+        
+        # Chunk the text
+        chunks = chunk_text_by_tokens(raw_text, tokenizer, args.max_input_tokens)
+        
+        # Process each chunk
+        chunk_results = []
+        for i, chunk in enumerate(chunks, 1):
+            result = process_chunk(chunk, i, len(chunks), model, tokenizer, args.max_output_tokens)
+            chunk_results.append(result)
+            
+            # Save intermediate result
+            chunk_path = output_dir / f"chunk_{i:02d}_result.md"
+            chunk_path.write_text(result, encoding='utf-8')
+            print(f"   💾 Saved intermediate: {chunk_path}")
+        
+        # Combine chunks
+        final_markdown = combine_chunks(chunk_results)
+        
+    else:
+        print(f"✅ Input fits in single chunk ({total_tokens:,} tokens)\n")
+        
+        # Process in single chunk
+        final_markdown = process_chunk(raw_text, 1, 1, model, tokenizer, args.max_output_tokens)
+    
+    # Save final markdown
+    md_path = output_dir / "02_reconstructed_report.md"
+    md_path.write_text(final_markdown, encoding='utf-8')
+    print(f"💾 Saved: {md_path}\n")
     
     # Create Word document
-    docx_path = output_dir / "03_consolidated_report.docx"
-    markdown_to_docx(consolidated_md, docx_path)
+    docx_path = output_dir / "03_reconstructed_report.docx"
+    markdown_to_docx(final_markdown, docx_path)
     
     print("=" * 70)
     print("✅ COMPLETE")
     print("=" * 70)
     print(f"\n📁 Outputs in {output_dir}:")
     print(f"   1. {raw_path.name} - Raw extracted text")
-    print(f"   2. {md_path.name} - Consolidated markdown")
-    print(f"   3. {docx_path.name} - Professional Word document")
-    print(f"\n🎉 Your 45 weeks are now organized in one document!\n")
+    print(f"   2. {md_path.name} - Reconstructed markdown")
+    print(f"   3. {docx_path.name} - Word document")
+    
+    if total_tokens > args.max_input_tokens:
+        print(f"\n   📦 Also saved {len(chunks)} intermediate chunk results")
+    
+    print(f"\n📊 Statistics:")
+    print(f"   Input: {total_tokens:,} tokens")
+    print(f"   Output: {len(final_markdown):,} characters")
+    print(f"\n🎉 Your weekly reports have been reconstructed!\n")
     
     return 0
 
