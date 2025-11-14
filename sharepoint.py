@@ -227,11 +227,14 @@ def generate_text(model, tokenizer, prompt: str, max_new_tokens: int = 5000) -> 
 
 
 def process_chunk(chunk: str, chunk_num: int, total_chunks: int, model, tokenizer, max_new_tokens: int = 5000) -> str:
-    """Process a single chunk with your exact prompt."""
-    
+    """
+    Process a single chunk, intelligently truncating it to ensure it fits in the model's context window.
+    """
     print(f"\n🔄 Processing chunk {chunk_num}/{total_chunks}...")
-    
-    prompt = f"""You are analyzing a long text containing ~45 weeks of weekly reports.  
+
+    # Define the prompt template WITHOUT the actual chunk data
+    # We use a placeholder {{chunk_text}} that we'll fill in later.
+    prompt_template = f"""You are analyzing a long text containing ~45 weeks of weekly reports.  
 Each week contains several main bullets (topics/projects) and sub-bullets (details, updates, tasks).  
 Some topics appear in multiple weeks with different updates, some appear only once, and some weeks reset or replace previous information.
 
@@ -276,16 +279,41 @@ ADDITIONAL REQUIREMENTS
 - No hallucination: use only the information in the provided text.
 
 TEXT TO CONVERT (CHUNK {chunk_num}/{total_chunks}):
-{chunk}
+{{chunk_text}}
 
 OUTPUT:
 """
+
+    # 1. Calculate how many tokens the instructions/template uses.
+    # We pass an empty string to the placeholder to accurately measure the template's size.
+    template_tokens = tokenizer.encode(prompt_template.format(chunk_text=""), add_special_tokens=False)
+    num_template_tokens = len(template_tokens)
+    print(f"   Prompt template uses {num_template_tokens:,} tokens.")
+
+    # 2. Define the model's context limit and calculate available space for the chunk.
+    MODEL_MAX_CONTEXT = 120000
+    SAFETY_MARGIN = 200  # A small buffer for special tokens and other overhead.
+    max_chunk_tokens = MODEL_MAX_CONTEXT - num_template_tokens - SAFETY_MARGIN
+    print(f"   Max tokens available for chunk data: {max_chunk_tokens:,}")
+
+    # 3. Tokenize the chunk data and truncate it if it's too large.
+    chunk_tokens = tokenizer.encode(chunk, add_special_tokens=False)
     
-    result = generate_text(model, tokenizer, prompt, max_new_tokens)
+    if len(chunk_tokens) > max_chunk_tokens:
+        print(f"   ⚠️  WARNING: Chunk is too large ({len(chunk_tokens):,} tokens). Truncating to fit context window.")
+        chunk_tokens = chunk_tokens[:max_chunk_tokens] # Keep the beginning of the chunk
+
+    # 4. Decode the (potentially truncated) tokens back into a clean string.
+    safe_chunk_text = tokenizer.decode(chunk_tokens, skip_special_tokens=True)
+
+    # 5. Assemble the final, guaranteed-to-fit prompt.
+    final_prompt = prompt_template.format(chunk_text=safe_chunk_text)
+    
+    # Now, call the generation function.
+    result = generate_text(model, tokenizer, final_prompt, max_new_tokens)
     print(f"✅ Chunk {chunk_num} processed ({len(result):,} characters)")
     
     return result
-
 
 def combine_chunks(chunk_results: List[str]) -> str:
     """Combine processed chunks into final document."""
