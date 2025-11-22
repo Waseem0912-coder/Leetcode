@@ -10,391 +10,411 @@ import plotly.express as px
 from plotly.subplots import make_subplots
 from docx import Document
 from docx.shared import Inches
-from collections import Counter
+from collections import Counter, defaultdict
 import json
 from itertools import combinations
 import warnings
+import gc  # For garbage collection
 warnings.filterwarnings('ignore')
 
-def filter_out_columns(df):
-    """Filter out rows based on release_type and vr_qualified conditions"""
-    col_to_filter = ['release_type', 'vr_qualified']
-    
-    # Remove rows where release_type == "SMR" or vr_qualified == "TRUE"
-    initial_len = len(df)
-    df = df[~((df['release_type'] == 'SMR') | (df['vr_qualified'] == 'TRUE'))]
-    print(f"Filtered out {initial_len - len(df)} rows based on release_type='SMR' or vr_qualified='TRUE'")
-    
-    # Handle priv_app columns - replace "[]" with empty/null
-    cols_to_clean = ["priv_app_in_base_only", "priv_app_in_variant_only"]
-    for col in cols_to_clean:
-        if col in df.columns:
-            # Replace "[]" string with empty string
-            df[col] = df[col].replace('[]', '')
-            df[col] = df[col].replace(['[]', '[ ]'], '', regex=False)
-            # Also handle NaN values
-            df[col] = df[col].fillna('')
-    
-    return df
-
-def fingerprint_truncation(df):
-    """Extract items between first and second "/" in fingerprint columns"""
-    cols = ["fingerprint", "same_device_fingerprint"]
-    
-    for col in cols:
-        if col in df.columns:
-            def extract_between_slashes(text):
-                if pd.isna(text) or text == '':
-                    return text
-                # Convert to string if not already
-                text = str(text)
-                # Split by "/" and get the second element (between first and second slash)
-                parts = text.split('/')
-                if len(parts) >= 2:
-                    return parts[1]
-                return text
-            
-            df[f'{col}_extracted'] = df[col].apply(extract_between_slashes)
-            print(f"Extracted fingerprint codes for column: {col}")
-    
-    return df
-
-def parse_app_list(text):
-    """Parse the app list string into a Python list"""
-    if pd.isna(text) or text == '' or text == '[]':
-        return []
-    
-    try:
-        # Try to parse as JSON first
-        if isinstance(text, str):
-            # Clean up the string
-            text = text.strip()
-            if text.startswith('[') and text.endswith(']'):
-                # Replace single quotes with double quotes for JSON parsing
-                text_json = text.replace("'", '"')
-                try:
-                    return json.loads(text_json)
-                except:
-                    # If JSON parsing fails, try eval (be careful with this in production)
-                    return eval(text)
-            else:
-                # If not in array format, split by comma
-                return [item.strip() for item in text.split(',') if item.strip()]
-        return []
-    except:
-        return []
-
-def get_top_items_and_combinations(app_lists, top_n=5):
-    """Get top individual items and combinations from a list of app lists"""
-    # Count individual items
-    individual_counter = Counter()
-    # Count combinations (pairs)
-    combination_counter = Counter()
-    
-    for apps in app_lists:
-        if apps:  # Only process non-empty lists
-            # Count individual items
-            for app in apps:
-                individual_counter[app] += 1
-            
-            # Count combinations (pairs) if there are at least 2 items
-            if len(apps) >= 2:
-                # Get all 2-item combinations
-                for combo in combinations(sorted(apps), 2):
-                    combination_counter[combo] += 1
-    
-    # Get top items
-    top_individual = individual_counter.most_common(top_n)
-    top_combinations = combination_counter.most_common(top_n)
-    
-    return top_individual, top_combinations
-
-def stats_creation(df):
-    """Create comprehensive statistics for the data"""
-    stats_results = {}
-    plots = []
-    
-    # Ensure we have the extracted fingerprint columns
-    if 'fingerprint_extracted' not in df.columns:
-        df = fingerprint_truncation(df)
-    
-    # Parse the app columns
-    for col in ['priv_app_in_base_only', 'priv_app_in_variant_only']:
-        if col in df.columns:
-            df[f'{col}_parsed'] = df[col].apply(parse_app_list)
-    
-    # Get unique devices and release types
-    devices = df['device'].unique() if 'device' in df.columns else []
-    release_types = df['release_type'].unique() if 'release_type' in df.columns else []
-    
-    print(f"Found {len(devices)} unique devices and {len(release_types)} release types")
-    
-    # Analyze for each device and release type combination
-    for device in devices[:10]:  # Limit to first 10 devices for performance
-        stats_results[device] = {}
+class LargeFileAnalyzer:
+    def __init__(self, csv_path, chunk_size=10000, max_rows=None):
+        self.csv_path = csv_path
+        self.chunk_size = chunk_size
+        self.max_rows = max_rows
+        self.stats = defaultdict(lambda: defaultdict(dict))
+        self.app_counters = {
+            'base': Counter(),
+            'variant': Counter(),
+            'base_combos': Counter(),
+            'variant_combos': Counter()
+        }
         
-        for release_type in release_types:
-            # Filter data for this device and release type
-            mask = (df['device'] == device) & (df['release_type'] == release_type)
-            subset = df[mask]
+    def filter_row(self, row):
+        """Filter out rows based on conditions"""
+        if row.get('release_type') == 'SMR' or row.get('vr_qualified') == 'TRUE':
+            return False
+        return True
+    
+    def clean_app_columns(self, row):
+        """Clean app columns - replace [] with empty"""
+        for col in ['priv_app_in_base_only', 'priv_app_in_variant_only']:
+            if col in row and row[col] in ['[]', '[ ]']:
+                row[col] = ''
+        return row
+    
+    def extract_fingerprint(self, text):
+        """Extract items between first and second /"""
+        if pd.isna(text) or text == '':
+            return text
+        text = str(text)
+        parts = text.split('/')
+        if len(parts) >= 2:
+            return parts[1]
+        return text
+    
+    def parse_app_list(self, text):
+        """Parse app list string into Python list"""
+        if pd.isna(text) or text == '' or text == '[]':
+            return []
+        
+        try:
+            if isinstance(text, str):
+                text = text.strip()
+                if text.startswith('[') and text.endswith(']'):
+                    text_json = text.replace("'", '"')
+                    try:
+                        return json.loads(text_json)
+                    except:
+                        return eval(text)
+                else:
+                    return [item.strip() for item in text.split(',') if item.strip()]
+        except:
+            return []
+        
+    def process_chunk(self, chunk):
+        """Process a single chunk of data"""
+        # Apply filtering
+        chunk = chunk[chunk.apply(self.filter_row, axis=1)]
+        
+        # Clean app columns
+        chunk = chunk.apply(self.clean_app_columns, axis=1)
+        
+        # Extract fingerprints
+        chunk['fingerprint_extracted'] = chunk['fingerprint'].apply(self.extract_fingerprint)
+        chunk['same_device_fingerprint_extracted'] = chunk['same_device_fingerprint'].apply(self.extract_fingerprint)
+        
+        # Parse app lists
+        chunk['base_apps'] = chunk['priv_app_in_base_only'].apply(self.parse_app_list)
+        chunk['variant_apps'] = chunk['priv_app_in_variant_only'].apply(self.parse_app_list)
+        
+        return chunk
+    
+    def update_statistics(self, chunk):
+        """Update running statistics with chunk data"""
+        # Group by device and release_type
+        for (device, release_type), group in chunk.groupby(['device', 'release_type']):
+            if device not in self.stats:
+                self.stats[device] = {}
+            if release_type not in self.stats[device]:
+                self.stats[device][release_type] = {
+                    'count': 0,
+                    'fingerprint_stats': defaultdict(lambda: {'base': Counter(), 'variant': Counter()}),
+                    'same_fingerprint_stats': defaultdict(lambda: {'base': Counter(), 'variant': Counter()})
+                }
             
-            if len(subset) == 0:
-                continue
+            self.stats[device][release_type]['count'] += len(group)
             
-            stats_results[device][release_type] = {
-                'count': len(subset),
-                'fingerprints': {},
-                'same_device_fingerprints': {}
-            }
+            # Process each row in the group
+            for _, row in group.iterrows():
+                # Update fingerprint stats
+                fp = row.get('fingerprint_extracted', '')
+                same_fp = row.get('same_device_fingerprint_extracted', '')
+                
+                # Count apps by fingerprint
+                if fp:
+                    for app in row['base_apps']:
+                        self.stats[device][release_type]['fingerprint_stats'][fp]['base'][app] += 1
+                    for app in row['variant_apps']:
+                        self.stats[device][release_type]['fingerprint_stats'][fp]['variant'][app] += 1
+                
+                if same_fp:
+                    for app in row['base_apps']:
+                        self.stats[device][release_type]['same_fingerprint_stats'][same_fp]['base'][app] += 1
+                    for app in row['variant_apps']:
+                        self.stats[device][release_type]['same_fingerprint_stats'][same_fp]['variant'][app] += 1
+                
+                # Update global app counters
+                for app in row['base_apps']:
+                    self.app_counters['base'][app] += 1
+                
+                for app in row['variant_apps']:
+                    self.app_counters['variant'][app] += 1
+                
+                # Count combinations
+                if len(row['base_apps']) >= 2:
+                    for combo in combinations(sorted(row['base_apps']), 2):
+                        self.app_counters['base_combos'][combo] += 1
+                
+                if len(row['variant_apps']) >= 2:
+                    for combo in combinations(sorted(row['variant_apps']), 2):
+                        self.app_counters['variant_combos'][combo] += 1
+    
+    def analyze(self):
+        """Main analysis function that processes file in chunks"""
+        print(f"Starting chunked analysis of {self.csv_path}")
+        print(f"Chunk size: {self.chunk_size} rows")
+        
+        rows_processed = 0
+        chunk_num = 0
+        
+        # Get column info from first chunk
+        first_chunk = pd.read_csv(self.csv_path, nrows=100)
+        print(f"Columns found: {first_chunk.columns.tolist()}")
+        
+        # Process file in chunks
+        for chunk in pd.read_csv(self.csv_path, chunksize=self.chunk_size):
+            chunk_num += 1
+            print(f"Processing chunk {chunk_num} ({len(chunk)} rows)...")
             
-            # Analyze by fingerprint groups
-            for fp_col, fp_name in [('fingerprint_extracted', 'fingerprints'), 
-                                   ('same_device_fingerprint_extracted', 'same_device_fingerprints')]:
-                if fp_col in subset.columns:
-                    fp_groups = subset.groupby(fp_col)
-                    
-                    for fp_value, fp_data in fp_groups:
-                        if pd.notna(fp_value):
-                            stats_results[device][release_type][fp_name][fp_value] = {}
-                            
-                            # Analyze app columns
-                            for app_col in ['priv_app_in_base_only', 'priv_app_in_variant_only']:
-                                parsed_col = f'{app_col}_parsed'
-                                if parsed_col in fp_data.columns:
-                                    app_lists = fp_data[parsed_col].tolist()
-                                    top_individual, top_combinations = get_top_items_and_combinations(app_lists)
-                                    
-                                    stats_results[device][release_type][fp_name][fp_value][app_col] = {
-                                        'top_individual': top_individual,
-                                        'top_combinations': top_combinations,
-                                        'total_entries': len(app_lists),
-                                        'non_empty_entries': sum(1 for apps in app_lists if apps)
-                                    }
+            # Process the chunk
+            processed_chunk = self.process_chunk(chunk)
+            
+            # Update statistics
+            self.update_statistics(processed_chunk)
+            
+            rows_processed += len(processed_chunk)
+            
+            # Check if we've reached the max rows
+            if self.max_rows and rows_processed >= self.max_rows:
+                print(f"Reached maximum rows limit: {self.max_rows}")
+                break
+            
+            # Garbage collection to free memory
+            del processed_chunk
+            gc.collect()
+        
+        print(f"Analysis complete. Processed {rows_processed} rows in {chunk_num} chunks")
+        return self.stats, self.app_counters
     
-    # Create visualizations
-    # 1. Device distribution
-    device_counts = df['device'].value_counts().head(20)
-    fig1 = px.bar(x=device_counts.index, y=device_counts.values,
-                  title='Top 20 Devices by Frequency',
-                  labels={'x': 'Device', 'y': 'Count'})
-    plots.append(('device_distribution.html', fig1))
-    
-    # 2. Release type distribution
-    if 'release_type' in df.columns:
-        release_counts = df['release_type'].value_counts()
-        fig2 = px.pie(values=release_counts.values, names=release_counts.index,
-                      title='Release Type Distribution')
-        plots.append(('release_type_distribution.html', fig2))
-    
-    # 3. App frequency analysis for top apps overall
-    all_base_apps = []
-    all_variant_apps = []
-    
-    if 'priv_app_in_base_only_parsed' in df.columns:
-        for apps in df['priv_app_in_base_only_parsed']:
-            all_base_apps.extend(apps)
-    
-    if 'priv_app_in_variant_only_parsed' in df.columns:
-        for apps in df['priv_app_in_variant_only_parsed']:
-            all_variant_apps.extend(apps)
-    
-    if all_base_apps:
-        base_counter = Counter(all_base_apps)
-        top_base = base_counter.most_common(15)
+    def create_visualizations(self, output_dir='/home/claude'):
+        """Create visualization files"""
+        plots = []
+        
+        # 1. Top devices by count
+        device_counts = Counter()
+        for device, release_data in self.stats.items():
+            for release_type, data in release_data.items():
+                device_counts[device] += data['count']
+        
+        top_devices = device_counts.most_common(20)
+        if top_devices:
+            fig1 = px.bar(x=[d[1] for d in top_devices], 
+                         y=[d[0] for d in top_devices],
+                         orientation='h',
+                         title='Top 20 Devices by Frequency',
+                         labels={'x': 'Count', 'y': 'Device'})
+            fig1.write_html(f'{output_dir}/device_distribution.html')
+            plots.append('device_distribution.html')
+        
+        # 2. Release type distribution
+        release_counts = Counter()
+        for device, release_data in self.stats.items():
+            for release_type, data in release_data.items():
+                release_counts[release_type] += data['count']
+        
+        if release_counts:
+            fig2 = px.pie(values=list(release_counts.values()), 
+                         names=list(release_counts.keys()),
+                         title='Release Type Distribution')
+            fig2.write_html(f'{output_dir}/release_type_distribution.html')
+            plots.append('release_type_distribution.html')
+        
+        # 3. Top base apps
+        top_base = self.app_counters['base'].most_common(15)
         if top_base:
             fig3 = px.bar(x=[item[1] for item in top_base], 
                          y=[item[0] for item in top_base],
                          orientation='h',
                          title='Top 15 Apps in Base Only',
                          labels={'x': 'Frequency', 'y': 'App'})
-            plots.append(('top_base_apps.html', fig3))
-    
-    if all_variant_apps:
-        variant_counter = Counter(all_variant_apps)
-        top_variant = variant_counter.most_common(15)
+            fig3.write_html(f'{output_dir}/top_base_apps.html')
+            plots.append('top_base_apps.html')
+        
+        # 4. Top variant apps
+        top_variant = self.app_counters['variant'].most_common(15)
         if top_variant:
             fig4 = px.bar(x=[item[1] for item in top_variant], 
                          y=[item[0] for item in top_variant],
                          orientation='h',
                          title='Top 15 Apps in Variant Only',
                          labels={'x': 'Frequency', 'y': 'App'})
-            plots.append(('top_variant_apps.html', fig4))
-    
-    # Save plots
-    for filename, fig in plots:
-        fig.write_html(f'/home/claude/{filename}')
-        print(f"Saved plot: {filename}")
-    
-    return stats_results, plots
-
-def create_report(df, stats_results, plots):
-    """Create a DOCX report with statistics and insights"""
-    doc = Document()
-    
-    # Title
-    doc.add_heading('Android Device Configuration Analysis Report', 0)
-    
-    # Summary Section
-    doc.add_heading('Executive Summary', 1)
-    doc.add_paragraph(f'Total records analyzed: {len(df):,}')
-    doc.add_paragraph(f'Unique devices: {df["device"].nunique() if "device" in df.columns else 0}')
-    doc.add_paragraph(f'Release types: {df["release_type"].unique().tolist() if "release_type" in df.columns else []}')
-    
-    # Data Overview
-    doc.add_heading('Data Overview', 1)
-    doc.add_paragraph('This report analyzes the application configurations across different Android devices, '
-                     'release types, and fingerprint variations.')
-    
-    # Key Findings Section
-    doc.add_heading('Key Findings', 1)
-    
-    # Find the most analyzed device
-    if stats_results:
-        first_device = list(stats_results.keys())[0]
-        doc.add_heading(f'Analysis for Device: {first_device}', 2)
+            fig4.write_html(f'{output_dir}/top_variant_apps.html')
+            plots.append('top_variant_apps.html')
         
-        for release_type, rt_data in stats_results[first_device].items():
-            doc.add_heading(f'Release Type: {release_type}', 3)
-            doc.add_paragraph(f'Total entries: {rt_data["count"]}')
+        # 5. Top app combinations
+        top_base_combos = self.app_counters['base_combos'].most_common(10)
+        if top_base_combos:
+            combo_names = [f"{c[0][0]} + {c[0][1]}" for c in top_base_combos]
+            combo_counts = [c[1] for c in top_base_combos]
+            fig5 = px.bar(x=combo_counts, y=combo_names,
+                         orientation='h',
+                         title='Top 10 App Combinations in Base',
+                         labels={'x': 'Frequency', 'y': 'App Combination'})
+            fig5.write_html(f'{output_dir}/top_base_combinations.html')
+            plots.append('top_base_combinations.html')
+        
+        print(f"Created {len(plots)} visualization files")
+        return plots
+    
+    def create_detailed_report(self, output_path='/home/claude/detailed_report.docx'):
+        """Create a detailed DOCX report"""
+        doc = Document()
+        
+        # Title
+        doc.add_heading('Android Device Configuration Analysis Report', 0)
+        doc.add_heading('Large-Scale Data Analysis', 1)
+        
+        # Summary
+        doc.add_heading('Executive Summary', 1)
+        
+        total_devices = len(self.stats)
+        total_entries = sum(sum(data['count'] for data in release_data.values()) 
+                          for release_data in self.stats.values())
+        
+        doc.add_paragraph(f'Total unique devices analyzed: {total_devices}')
+        doc.add_paragraph(f'Total configuration entries: {total_entries:,}')
+        doc.add_paragraph(f'Unique apps in base: {len(self.app_counters["base"])}')
+        doc.add_paragraph(f'Unique apps in variant: {len(self.app_counters["variant"])}')
+        
+        # Top-level statistics
+        doc.add_heading('Key Findings', 1)
+        
+        # Most common apps
+        doc.add_heading('Most Frequent Applications', 2)
+        
+        doc.add_heading('Top 10 Base Apps', 3)
+        for app, count in self.app_counters['base'].most_common(10):
+            doc.add_paragraph(f'• {app}: {count:,} occurrences', style='List Bullet')
+        
+        doc.add_heading('Top 10 Variant Apps', 3)
+        for app, count in self.app_counters['variant'].most_common(10):
+            doc.add_paragraph(f'• {app}: {count:,} occurrences', style='List Bullet')
+        
+        # App combinations
+        doc.add_heading('Common App Combinations', 2)
+        
+        doc.add_heading('Top 5 Base App Pairs', 3)
+        for combo, count in self.app_counters['base_combos'].most_common(5):
+            doc.add_paragraph(f'• {combo[0]} + {combo[1]}: {count:,} occurrences', style='List Bullet')
+        
+        doc.add_heading('Top 5 Variant App Pairs', 3)
+        for combo, count in self.app_counters['variant_combos'].most_common(5):
+            doc.add_paragraph(f'• {combo[0]} + {combo[1]}: {count:,} occurrences', style='List Bullet')
+        
+        # Device-specific analysis (top 5 devices)
+        doc.add_heading('Device-Specific Analysis', 1)
+        
+        device_totals = [(device, sum(data['count'] for data in release_data.values()))
+                        for device, release_data in self.stats.items()]
+        device_totals.sort(key=lambda x: x[1], reverse=True)
+        
+        for device, total in device_totals[:5]:
+            doc.add_heading(f'Device: {device} (Total: {total:,} entries)', 2)
             
-            # Report on fingerprints
-            for fp_type in ['fingerprints', 'same_device_fingerprints']:
-                if rt_data[fp_type]:
-                    doc.add_heading(f'{fp_type.replace("_", " ").title()}', 4)
+            for release_type, data in self.stats[device].items():
+                doc.add_heading(f'Release Type: {release_type}', 3)
+                doc.add_paragraph(f'Entries: {data["count"]:,}')
+                
+                # Top apps by fingerprint
+                if data['fingerprint_stats']:
+                    doc.add_paragraph('Top Fingerprint Configurations:', style='List Bullet')
                     
-                    for fp_value, fp_data in list(rt_data[fp_type].items())[:3]:  # Top 3 fingerprints
-                        doc.add_paragraph(f'\nFingerprint: {fp_value}', style='List Bullet')
+                    # Get top fingerprints by total app count
+                    fp_totals = []
+                    for fp, app_data in data['fingerprint_stats'].items():
+                        total_apps = sum(app_data['base'].values()) + sum(app_data['variant'].values())
+                        fp_totals.append((fp, total_apps, app_data))
+                    
+                    fp_totals.sort(key=lambda x: x[1], reverse=True)
+                    
+                    for fp, total, app_data in fp_totals[:3]:
+                        doc.add_paragraph(f'  Fingerprint: {fp}', style='List Bullet 2')
                         
-                        for app_col in ['priv_app_in_base_only', 'priv_app_in_variant_only']:
-                            if app_col in fp_data:
-                                doc.add_paragraph(f'{app_col.replace("_", " ").title()}:', style='List Bullet 2')
-                                
-                                # Top individual apps
-                                if fp_data[app_col]['top_individual']:
-                                    doc.add_paragraph('Top Individual Apps:', style='List Bullet 3')
-                                    for app, count in fp_data[app_col]['top_individual']:
-                                        doc.add_paragraph(f'{app}: {count} occurrences', style='List Bullet 3')
-                                
-                                # Top combinations
-                                if fp_data[app_col]['top_combinations']:
-                                    doc.add_paragraph('Top App Combinations:', style='List Bullet 3')
-                                    for combo, count in fp_data[app_col]['top_combinations']:
-                                        doc.add_paragraph(f'{combo[0]} + {combo[1]}: {count} occurrences', 
-                                                        style='List Bullet 3')
-    
-    # Statistical Summary
-    doc.add_heading('Statistical Summary', 1)
-    
-    # Overall app statistics
-    all_base_apps = []
-    all_variant_apps = []
-    
-    if 'priv_app_in_base_only_parsed' in df.columns:
-        for apps in df['priv_app_in_base_only_parsed']:
-            all_base_apps.extend(apps)
-    
-    if 'priv_app_in_variant_only_parsed' in df.columns:
-        for apps in df['priv_app_in_variant_only_parsed']:
-            all_variant_apps.extend(apps)
-    
-    if all_base_apps:
-        doc.add_heading('Base Apps Statistics', 2)
-        doc.add_paragraph(f'Total unique apps in base: {len(set(all_base_apps))}')
-        doc.add_paragraph(f'Total app occurrences: {len(all_base_apps)}')
+                        top_base = app_data['base'].most_common(3)
+                        if top_base:
+                            doc.add_paragraph(f'    Top base apps: {", ".join([f"{app} ({cnt})" for app, cnt in top_base])}', 
+                                           style='List Bullet 3')
+                        
+                        top_variant = app_data['variant'].most_common(3)
+                        if top_variant:
+                            doc.add_paragraph(f'    Top variant apps: {", ".join([f"{app} ({cnt})" for app, cnt in top_variant])}', 
+                                           style='List Bullet 3')
         
-        base_counter = Counter(all_base_apps)
-        doc.add_paragraph('\nTop 10 Most Frequent Base Apps:')
-        for app, count in base_counter.most_common(10):
-            doc.add_paragraph(f'• {app}: {count} occurrences', style='List Bullet')
-    
-    if all_variant_apps:
-        doc.add_heading('Variant Apps Statistics', 2)
-        doc.add_paragraph(f'Total unique apps in variant: {len(set(all_variant_apps))}')
-        doc.add_paragraph(f'Total app occurrences: {len(all_variant_apps)}')
+        # Conclusions
+        doc.add_heading('Analysis Insights', 1)
+        doc.add_paragraph('Based on the large-scale analysis of device configurations:')
         
-        variant_counter = Counter(all_variant_apps)
-        doc.add_paragraph('\nTop 10 Most Frequent Variant Apps:')
-        for app, count in variant_counter.most_common(10):
-            doc.add_paragraph(f'• {app}: {count} occurrences', style='List Bullet')
-    
-    # Conclusions
-    doc.add_heading('Conclusions and Recommendations', 1)
-    doc.add_paragraph('Based on the analysis of device configurations and application distributions:')
-    doc.add_paragraph('• There is significant variation in application configurations across different devices and release types.')
-    doc.add_paragraph('• Certain applications appear consistently across multiple configurations, indicating core functionality.')
-    doc.add_paragraph('• The fingerprint-based grouping reveals patterns in device variants and their associated applications.')
-    
-    # Save the document
-    doc.save('/home/claude/analysis_report.docx')
-    print("Report saved as analysis_report.docx")
-    
-    return doc
+        insights = []
+        
+        # Check for dominant apps
+        top_base_app = self.app_counters['base'].most_common(1)[0] if self.app_counters['base'] else None
+        if top_base_app:
+            insights.append(f'The most common base app "{top_base_app[0]}" appears {top_base_app[1]:,} times')
+        
+        # Check for common combinations
+        top_combo = self.app_counters['base_combos'].most_common(1)[0] if self.app_counters['base_combos'] else None
+        if top_combo:
+            insights.append(f'The app pair "{top_combo[0][0]}" and "{top_combo[0][1]}" frequently appear together ({top_combo[1]:,} times)')
+        
+        # Device diversity
+        if len(self.stats) > 10:
+            insights.append(f'High device diversity with {len(self.stats)} unique devices analyzed')
+        
+        for insight in insights:
+            doc.add_paragraph(f'• {insight}', style='List Bullet')
+        
+        # Save document
+        doc.save(output_path)
+        print(f"Detailed report saved to {output_path}")
+        
+        return doc
 
 def main():
-    """Main execution function"""
-    print("Starting Android Device Configuration Analysis...")
+    """Main execution with large file handling"""
+    print("=" * 60)
+    print("LARGE FILE ANDROID CONFIGURATION ANALYZER")
+    print("=" * 60)
     
-    # Check if output.csv exists
     csv_path = "output.csv"
+    
     if not os.path.exists(csv_path):
-        print(f"Error: {csv_path} not found in current directory")
+        print(f"Error: {csv_path} not found")
         return
     
-    # Read CSV with chunking for large files
-    print(f"Reading {csv_path}...")
+    # Get file size
+    file_size = os.path.getsize(csv_path) / (1024 * 1024)  # Size in MB
+    print(f"File size: {file_size:.2f} MB")
     
-    try:
-        # First, get a sample to understand the structure
-        sample_df = pd.read_csv(csv_path, nrows=10000)
-        print(f"Sample loaded. Columns found: {sample_df.columns.tolist()}")
-        
-        # Process the full file in chunks if it's large
+    # Determine chunk size based on file size
+    if file_size > 100:
         chunk_size = 50000
-        chunks = []
-        
-        for chunk in pd.read_csv(csv_path, chunksize=chunk_size):
-            # Apply filtering to each chunk
-            filtered_chunk = filter_out_columns(chunk)
-            chunks.append(filtered_chunk)
-            
-            if len(chunks) * chunk_size >= 200000:  # Limit to 200k rows for analysis
-                print("Reached analysis limit of 200k rows")
-                break
-        
-        # Combine chunks
-        df = pd.concat(chunks, ignore_index=True)
-        print(f"Loaded {len(df)} rows after filtering")
-        
-    except Exception as e:
-        print(f"Error reading CSV: {e}")
-        # Try with a smaller sample
-        print("Attempting to read a smaller sample...")
-        df = pd.read_csv(csv_path, nrows=50000)
-        df = filter_out_columns(df)
+    elif file_size > 50:
+        chunk_size = 20000
+    else:
+        chunk_size = 10000
     
-    # Apply fingerprint truncation
-    print("\nApplying fingerprint truncation...")
-    df = fingerprint_truncation(df)
+    # Create analyzer
+    analyzer = LargeFileAnalyzer(
+        csv_path=csv_path,
+        chunk_size=chunk_size,
+        max_rows=None  # Set to a number if you want to limit processing
+    )
     
-    # Create statistics
-    print("\nGenerating statistics and visualizations...")
-    stats_results, plots = stats_creation(df)
+    # Run analysis
+    stats, app_counters = analyzer.analyze()
+    
+    # Create visualizations
+    print("\nCreating visualizations...")
+    plots = analyzer.create_visualizations()
     
     # Create report
-    print("\nCreating report...")
-    create_report(df, stats_results, plots)
+    print("\nCreating detailed report...")
+    analyzer.create_detailed_report()
     
-    # Save processed data sample
-    df.head(1000).to_csv('/home/claude/processed_sample.csv', index=False)
-    print("\nSaved processed sample to processed_sample.csv")
+    print("\n" + "=" * 60)
+    print("ANALYSIS COMPLETE!")
+    print("=" * 60)
+    print("\nGenerated files:")
+    print("- detailed_report.docx : Comprehensive analysis report")
+    for plot in plots:
+        print(f"- {plot}")
     
-    print("\nAnalysis complete! Check the following files:")
-    print("- analysis_report.docx : Comprehensive report")
-    print("- device_distribution.html : Device frequency chart")
-    print("- release_type_distribution.html : Release type distribution")
-    print("- top_base_apps.html : Top apps in base configuration")
-    print("- top_variant_apps.html : Top apps in variant configuration")
-    print("- processed_sample.csv : Sample of processed data")
+    print("\nStatistics Summary:")
+    print(f"- Devices analyzed: {len(stats)}")
+    print(f"- Unique base apps: {len(app_counters['base'])}")
+    print(f"- Unique variant apps: {len(app_counters['variant'])}")
+    print(f"- Unique app combinations found: {len(app_counters['base_combos']) + len(app_counters['variant_combos'])}")
 
 if __name__ == "__main__":
     main()
