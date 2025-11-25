@@ -1,512 +1,415 @@
-#!/usr/bin/env python3
 """
-Weekly Reports Consolidation with Chunking for Large PDFs
-Handles millions of tokens by processing in manageable chunks.
+LLM-Powered Insights Generator for Fingerprint Data
+
+This module uses Ollama to generate intelligent insights about the fingerprint
+grouping data, analyzing patterns in priv_base_apps and priv_var_apps across
+devices and build types.
+
+Usage:
+    python generate_insights.py --input fingerprint_report.json --output insights_report.json
 """
+
+import json
+import subprocess
+from typing import Dict, List, Any
+from collections import Counter
 import argparse
-from pathlib import Path
-import pdfplumber
-from docx import Document
-from transformers import AutoTokenizer, AutoModelForCausalLM
-import torch
-import re
-from datetime import datetime
-from typing import List, Tuple
-
-def print_environment_info():
-    """Display GPU configuration."""
-    print("=" * 70)
-    print("🔍 GPU CONFIGURATION")
-    print("=" * 70)
-    
-    if torch.cuda.is_available():
-        num_gpus = torch.cuda.device_count()
-        print(f"\nDetected {num_gpus} GPUs:")
-        total_memory = 0
-        for i in range(num_gpus):
-            gpu_mem = torch.cuda.get_device_properties(i).total_memory / 1e9
-            total_memory += gpu_mem
-            print(f"  GPU {i}: {torch.cuda.get_device_name(i)} - {gpu_mem:.1f} GB")
-        print(f"\nTotal VRAM: {total_memory:.1f} GB")
-    else:
-        print("\n⚠️  No GPU detected - will run on CPU")
-    print("=" * 70 + "\n")
 
 
-def load_model_and_tokenizer(model_id: str = "openai/gpt-oss-120b"):
-    """Load model and tokenizer distributed across all GPUs."""
-    print(f"🔧 Loading {model_id}...")
-    
-    num_gpus = torch.cuda.device_count()
-    if num_gpus == 0:
-        raise RuntimeError("No CUDA GPUs available")
-    
-    # Configure memory per GPU
-    max_memory_per_gpu = {}
-    for i in range(num_gpus):
-        total_mem = torch.cuda.get_device_properties(i).total_memory / 1e9
-        usable_mem = max(total_mem * 0.5, 60)  # Use 50% for model, leave rest for operations
-        max_memory_per_gpu[i] = f"{int(usable_mem)}GiB"
-    
-    print(f"\n💾 Memory allocation per GPU: {list(max_memory_per_gpu.values())[0]}")
-    
-    # Load tokenizer
-    print("📥 Loading tokenizer...")
-    tokenizer = AutoTokenizer.from_pretrained(model_id, trust_remote_code=True)
-    
-    # Load model
-    print("📥 Loading model...")
-    model = AutoModelForCausalLM.from_pretrained(
-        model_id,
-        torch_dtype=torch.bfloat16,
-        device_map="balanced",
-        max_memory=max_memory_per_gpu,
-        trust_remote_code=True,
-        low_cpu_mem_usage=True,
-    )
-    
-    # Verify distribution
-    if hasattr(model, 'hf_device_map'):
-        print("\n📍 Model Distribution:")
-        device_counts = {}
-        for name, device in model.hf_device_map.items():
-            device_str = f"GPU {device}" if isinstance(device, int) else str(device)
-            device_counts[device_str] = device_counts.get(device_str, 0) + 1
-        
-        for device, count in sorted(device_counts.items()):
-            print(f"  {device}: {count} layers")
-    
-    print("\n✅ Model and tokenizer loaded\n")
-    return model, tokenizer
-
-
-def extract_text_from_pdf(pdf_path: Path) -> str:
-    """Extract all text from PDF."""
-    print(f"📄 Extracting text from: {pdf_path.name}")
-    
-    all_text = []
-    with pdfplumber.open(pdf_path) as pdf:
-        total_pages = len(pdf.pages)
-        print(f"   Found {total_pages} pages")
-        
-        for i, page in enumerate(pdf.pages, 1):
-            page_text = page.extract_text()
-            if page_text:
-                all_text.append(f"\n{'='*70}\nPAGE {i}\n{'='*70}\n")
-                all_text.append(page_text.strip())
-            
-            if i % 10 == 0 or i == total_pages:
-                print(f"   Progress: {i}/{total_pages} pages...", end='\r')
-        
-        print()
-    
-    combined_text = "\n\n".join(all_text)
-    print(f"✅ Extracted {total_pages} pages ({len(combined_text):,} characters)\n")
-    return combined_text
-
-
-def count_tokens(text: str, tokenizer) -> int:
-    """Count tokens in text."""
-    tokens = tokenizer.encode(text, add_special_tokens=True)
-    return len(tokens)
-
-
-def chunk_text_by_tokens(text: str, tokenizer, max_input_tokens: int = 90000) -> List[str]:
+def call_ollama(prompt: str, model: str = "llama3.2") -> str:
     """
-    Split text into chunks based on token count.
-    Tries to split on week boundaries or page markers for clean breaks.
+    Call Ollama API to generate text.
+    
+    Args:
+        prompt: The prompt to send to the model
+        model: The Ollama model to use (default: llama3.2)
+    
+    Returns:
+        Generated text response
     """
-    print(f"\n📦 Chunking text (max {max_input_tokens:,} tokens per chunk)...")
-    
-    # First, try to split by weeks
-    week_pattern = r'\n={70}\nPAGE \d+\n={70}\n'
-    sections = re.split(week_pattern, text)
-    
-    chunks = []
-    current_chunk = []
-    current_tokens = 0
-    
-    for i, section in enumerate(sections):
-        if not section.strip():
-            continue
-            
-        section_tokens = count_tokens(section, tokenizer)
-        
-        # If single section is too large, split it further
-        if section_tokens > max_input_tokens:
-            print(f"   ⚠️  Section {i} has {section_tokens:,} tokens (too large)")
-            # Split by paragraphs
-            paragraphs = section.split('\n\n')
-            for para in paragraphs:
-                para_tokens = count_tokens(para, tokenizer)
-                if current_tokens + para_tokens > max_input_tokens and current_chunk:
-                    # Save current chunk
-                    chunks.append('\n\n'.join(current_chunk))
-                    current_chunk = [para]
-                    current_tokens = para_tokens
-                else:
-                    current_chunk.append(para)
-                    current_tokens += para_tokens
-        else:
-            # Check if adding this section exceeds limit
-            if current_tokens + section_tokens > max_input_tokens and current_chunk:
-                # Save current chunk
-                chunks.append('\n\n'.join(current_chunk))
-                current_chunk = [section]
-                current_tokens = section_tokens
-            else:
-                current_chunk.append(section)
-                current_tokens += section_tokens
-    
-    # Add remaining chunk
-    if current_chunk:
-        chunks.append('\n\n'.join(current_chunk))
-    
-    # Verify chunk sizes
-    print(f"\n   Created {len(chunks)} chunks:")
-    for i, chunk in enumerate(chunks, 1):
-        chunk_tokens = count_tokens(chunk, tokenizer)
-        print(f"   Chunk {i}: {chunk_tokens:,} tokens ({len(chunk):,} chars)")
-    
-    return chunks
-
-
-def generate_text(model, tokenizer, prompt: str, max_new_tokens: int = 5000) -> str:
-    """
-    Generate text using ALL GPUs properly.
-    """
-    
-    # Tokenize with truncation
-    inputs = tokenizer(
-        prompt, 
-        return_tensors="pt", 
-        truncation=True, 
-        max_length=120000  # Model's context window
-    )
-    
-    # Get first device dynamically
-    first_device = None
-    if hasattr(model, 'hf_device_map'):
-        for name, device in model.hf_device_map.items():
-            first_device = device
-            break
-    
-    if first_device is None:
-        first_device = next(model.parameters()).device
-    
-    inputs = {k: v.to(first_device) for k, v in inputs.items()}
-    
-    input_tokens = inputs['input_ids'].shape[1]
-    
-    # Check if input fits
-    if input_tokens >= 120000:
-        print(f"   ⚠️  WARNING: Input ({input_tokens:,} tokens) at context limit!")
-    
-    print(f"   Input: {input_tokens:,} tokens")
-    print(f"   Max output: {max_new_tokens:,} tokens")
-    print(f"   Processing on device: {first_device}")
-    
-    # Generate
-    with torch.inference_mode():
-        outputs = model.generate(
-            **inputs,
-            max_new_tokens=max_new_tokens,
-            do_sample=False,
-            temperature=1.0,
-            pad_token_id=tokenizer.eos_token_id,
-            eos_token_id=tokenizer.eos_token_id,
+    try:
+        # Use subprocess to call ollama
+        result = subprocess.run(
+            ["ollama", "run", model],
+            input=prompt,
+            capture_output=True,
+            text=True,
+            timeout=120
         )
-    
-    # Decode only new tokens
-    generated_text = tokenizer.decode(
-        outputs[0][inputs['input_ids'].shape[1]:], 
-        skip_special_tokens=True
-    )
-    
-    return generated_text
+        
+        if result.returncode == 0:
+            return result.stdout.strip()
+        else:
+            print(f"Ollama error: {result.stderr}")
+            return None
+            
+    except subprocess.TimeoutExpired:
+        print("Ollama timed out")
+        return None
+    except FileNotFoundError:
+        print("Ollama not found, using intelligent fallback insights")
+        return None
+    except Exception as e:
+        print(f"Error calling Ollama: {e}")
+        return None
 
 
-def process_chunk(chunk: str, chunk_num: int, total_chunks: int, model, tokenizer, max_new_tokens: int = 5000) -> str:
+def generate_intelligent_insight(device: str, build_type: str, data: Dict) -> str:
     """
-    Process a single chunk, intelligently truncating it to ensure it fits in the model's context window.
+    Generate intelligent insights based on data analysis when LLM is unavailable.
+    This provides meaningful analysis based on statistical patterns.
     """
-    print(f"\n🔄 Processing chunk {chunk_num}/{total_chunks}...")
+    combinations = data.get('combinations', [])
+    
+    # Collect all apps
+    all_base_apps = []
+    all_var_apps = []
+    combo_sizes = []
+    
+    for combo in combinations:
+        base = combo.get('priv_base_apps', [])
+        var = combo.get('priv_var_apps', [])
+        all_base_apps.extend(base)
+        all_var_apps.extend(var)
+        combo_sizes.append((len(base), len(var)))
+    
+    # Analyze
+    base_counter = Counter(all_base_apps)
+    var_counter = Counter(all_var_apps)
+    
+    base_unique = len(base_counter)
+    var_unique = len(var_counter)
+    base_total = len(all_base_apps)
+    var_total = len(all_var_apps)
+    
+    # Find dominant apps
+    base_dominant = [app for app, count in base_counter.items() if count > 1]
+    var_dominant = [app for app, count in var_counter.items() if count > 1]
+    
+    # Find single-occurrence apps
+    base_single = [app for app, count in base_counter.items() if count == 1]
+    var_single = [app for app, count in var_counter.items() if count == 1]
+    
+    # Calculate average apps per combination
+    avg_base = base_total / len(combinations) if combinations else 0
+    avg_var = var_total / len(combinations) if combinations else 0
+    
+    # Build insight text
+    insights = []
+    
+    # PRIV BASE APPS INSIGHT
+    insights.append("**PRIV BASE APPS INSIGHT**")
+    if base_dominant:
+        insights.append(f"Analysis identified {len(base_dominant)} dominant base app(s) appearing across multiple combinations: {', '.join(base_dominant[:3])}. These represent core privileged applications consistently required for this device configuration.")
+    elif base_unique == base_total:
+        insights.append(f"All {base_unique} base apps are unique across combinations, indicating highly specialized privileged application requirements for each fingerprint pairing. No single app dominates the configuration.")
+    else:
+        insights.append(f"The {base_unique} unique base apps show a distributed pattern across {len(combinations)} combinations, averaging {avg_base:.1f} apps per combination.")
+    
+    if len(base_single) > base_unique * 0.7:
+        insights.append(f"Notable: {len(base_single)} apps ({len(base_single)*100//base_unique}%) appear only once, suggesting fingerprint-specific base app requirements.")
+    
+    # PRIV VARIANT APPS INSIGHT
+    insights.append("\n**PRIV VARIANT APPS INSIGHT**")
+    if var_dominant:
+        insights.append(f"Variant apps show {len(var_dominant)} recurring application(s): {', '.join(var_dominant[:3])}. These likely represent shared system components across device variants.")
+    elif var_unique == var_total:
+        insights.append(f"Each of the {var_unique} variant apps is unique to its combination, indicating distinct customization per fingerprint configuration.")
+    else:
+        insights.append(f"The variant app distribution shows {var_unique} unique apps averaging {avg_var:.1f} per combination.")
+    
+    # COMBINED ANALYSIS
+    insights.append("\n**COMBINED ANALYSIS**")
+    
+    # Compare distributions
+    if base_unique > var_unique:
+        insights.append(f"Base apps ({base_unique}) show more diversity than variant apps ({var_unique}), suggesting privileged base configurations are more variable than system variants for this build type.")
+    elif var_unique > base_unique:
+        insights.append(f"Variant apps ({var_unique}) exceed base app diversity ({base_unique}), indicating system customization varies more than core privileged app requirements.")
+    else:
+        insights.append(f"Base and variant apps show similar diversity ({base_unique} each), suggesting balanced configuration complexity.")
+    
+    # Analyze combination sizes
+    max_combo = max(combo_sizes, key=lambda x: x[0] + x[1])
+    min_combo = min(combo_sizes, key=lambda x: x[0] + x[1])
+    
+    if max_combo != min_combo:
+        insights.append(f"Combination complexity ranges from {sum(min_combo)} to {sum(max_combo)} total apps, indicating variable configuration requirements across fingerprint pairings.")
+    
+    # KEY FINDINGS
+    insights.append("\n**KEY FINDINGS**")
+    findings = []
+    
+    if base_dominant:
+        findings.append(f"• Core dependencies: {', '.join(base_dominant[:2])} appear in multiple configurations")
+    if len(base_single) > 2:
+        findings.append(f"• {len(base_single)} specialized base apps suggest fingerprint-specific requirements")
+    if avg_base > 2:
+        findings.append(f"• High base app density ({avg_base:.1f} avg) indicates complex privileged requirements")
+    if var_unique < base_unique:
+        findings.append(f"• Variant apps are more standardized than base apps across this configuration")
+    
+    if not findings:
+        findings.append(f"• Configuration shows standard distribution with {len(combinations)} combinations")
+        findings.append(f"• No single app dominates - distributed privileged requirements")
+    
+    insights.extend(findings)
+    
+    return "\n".join(insights)
 
-    # Define the prompt template WITHOUT the actual chunk data
-    # We use a placeholder {{chunk_text}} that we'll fill in later.
-    prompt_template = f"""You are analyzing a long text containing ~45 weeks of weekly reports.  
-Each week contains several main bullets (topics/projects) and sub-bullets (details, updates, tasks).  
-Some topics appear in multiple weeks with different updates, some appear only once, and some weeks reset or replace previous information.
 
-GOAL  
-Reconstruct the entire set of weekly reports into a clean, structured markdown document that:
-- Preserves the original week-by-week structure
-- Preserves the original topic names EXACTLY as they appeared (no normalization or merging)
-- Preserves all details under each week and under the correct topic
-- Makes the final document readable, scannable, and consistently formatted
+def analyze_app_distribution(apps_list: List[str]) -> Dict:
+    """
+    Analyze the distribution and patterns in an apps list.
+    
+    Returns statistics about:
+    - Total unique apps
+    - Most common apps
+    - App frequency distribution
+    """
+    all_apps = []
+    for apps in apps_list:
+        if isinstance(apps, list):
+            all_apps.extend(apps)
+        elif isinstance(apps, str):
+            all_apps.append(apps)
+    
+    counter = Counter(all_apps)
+    
+    return {
+        'total_unique': len(counter),
+        'total_occurrences': len(all_apps),
+        'most_common': counter.most_common(5),
+        'frequency_distribution': dict(counter),
+        'single_occurrence_apps': [app for app, count in counter.items() if count == 1],
+        'dominant_apps': [app for app, count in counter.items() if count > 1]
+    }
 
-INTERNAL REASONING STEPS (DO NOT OUTPUT THESE STEPS)  
-1. Detect week boundaries (Week 1 → Week 45 or similar markers).  
-2. Inside each week:
-   - Identify which bullets are main topics (first-level bullets or bolded headers).
-   - Identify which bullets are subpoints or child items.
-3. Do NOT normalize, merge, rename, or cluster topics.
-   - If Week 3 says "Offline Monitoring" and Week 7 says "Monitoring Improvements," treat them as two separate topics even if they seem similar.
-4. Do NOT build a cross-week topic timeline.
-   - Each week is self-contained.
-   - Simply reconstruct Week 1's content, then Week 2's content, etc.
-5. Preserve:
-   - All numbers, dates, metrics, names, file paths, schemas, decisions, blockers, achievements.
-   - All bullet points and nested bullets.
-   - The order bullets appeared in the original text.
-6. Clean up:
-   - Remove PDF artifacts, page numbers, broken lines, nonsense breaks.
-   - Convert inconsistent indentation into consistent markdown hierarchy.
 
-OUTPUT FORMAT  
-Use the following exact structure:
-- `# Week X` for each week  
-- Under each week, use `## <topic name exactly as written>`  
-- Under each topic, use bullet points (`-`) and nested bullets as needed  
-- Keep chronological order (Week 1 → Week 45)  
-- Keep the original content attached to its week only  
-- Do NOT merge or reorganize topics across weeks  
-- Do NOT infer missing continuity or relationships
+def build_analysis_prompt(device: str, build_type: str, data: Dict) -> str:
+    """
+    Build a comprehensive prompt for LLM analysis of a device/build combination.
+    
+    This prompt is designed to extract meaningful insights about:
+    1. Individual column patterns (priv_base_apps, priv_var_apps)
+    2. Combined patterns and correlations
+    3. Anomalies and notable observations
+    """
+    combinations = data.get('combinations', [])
+    
+    # Collect all apps for analysis
+    all_base_apps = []
+    all_var_apps = []
+    combination_details = []
+    
+    for combo in combinations:
+        fp = combo.get('fingerprint_parsed', combo.get('fingerprint', 'Unknown'))
+        sdp = combo.get('same_device_fingerprint_parsed', combo.get('same_device_fingerprint', 'Unknown'))
+        base_apps = combo.get('priv_base_apps', [])
+        var_apps = combo.get('priv_var_apps', [])
+        
+        all_base_apps.extend(base_apps)
+        all_var_apps.extend(var_apps)
+        
+        combination_details.append({
+            'fingerprint': fp,
+            'same_device_fp': sdp,
+            'base_apps': base_apps,
+            'var_apps': var_apps
+        })
+    
+    # Analyze distributions
+    base_analysis = analyze_app_distribution([all_base_apps])
+    var_analysis = analyze_app_distribution([all_var_apps])
+    
+    # Build the prompt
+    prompt = f"""You are a senior Android system analyst reviewing privileged application data for device configurations.
 
-ADDITIONAL REQUIREMENTS  
-- Output ONLY the final markdown.  
-- NO explanations, NO preamble, NO reasoning.
-- No hallucination: use only the information in the provided text.
+TASK: Analyze the following data for Device "{device}" with Build Type "{build_type}" and provide actionable insights.
 
-TEXT TO CONVERT (CHUNK {chunk_num}/{total_chunks}):
-{{chunk_text}}
+=== RAW DATA ===
+Total Fingerprint Combinations: {len(combinations)}
+Unique Fingerprints: {data.get('unique_fingerprints_parsed', data.get('unique_fingerprints', []))}
+Unique Same-Device Fingerprints: {data.get('unique_same_device_fps_parsed', data.get('unique_same_device_fps', []))}
 
-OUTPUT:
+=== COMBINATION BREAKDOWN ===
+"""
+    
+    for i, detail in enumerate(combination_details, 1):
+        prompt += f"""
+Combination {i}:
+  Fingerprint: {detail['fingerprint']}
+  Same Device FP: {detail['same_device_fp']}
+  Priv Base Apps ({len(detail['base_apps'])}): {', '.join(detail['base_apps']) if detail['base_apps'] else 'None'}
+  Priv Variant Apps ({len(detail['var_apps'])}): {', '.join(detail['var_apps']) if detail['var_apps'] else 'None'}
 """
 
-    # 1. Calculate how many tokens the instructions/template uses.
-    # We pass an empty string to the placeholder to accurately measure the template's size.
-    template_tokens = tokenizer.encode(prompt_template.format(chunk_text=""), add_special_tokens=False)
-    num_template_tokens = len(template_tokens)
-    print(f"   Prompt template uses {num_template_tokens:,} tokens.")
+    prompt += f"""
+=== STATISTICAL SUMMARY ===
 
-    # 2. Define the model's context limit and calculate available space for the chunk.
-    MODEL_MAX_CONTEXT = 120000
-    SAFETY_MARGIN = 200  # A small buffer for special tokens and other overhead.
-    max_chunk_tokens = MODEL_MAX_CONTEXT - num_template_tokens - SAFETY_MARGIN
-    print(f"   Max tokens available for chunk data: {max_chunk_tokens:,}")
+PRIV BASE APPS ANALYSIS:
+- Total unique apps: {base_analysis['total_unique']}
+- Total occurrences: {base_analysis['total_occurrences']}
+- Most common apps: {base_analysis['most_common']}
+- Apps appearing only once: {len(base_analysis['single_occurrence_apps'])}
+- Dominant apps (>1 occurrence): {base_analysis['dominant_apps']}
 
-    # 3. Tokenize the chunk data and truncate it if it's too large.
-    chunk_tokens = tokenizer.encode(chunk, add_special_tokens=False)
-    
-    if len(chunk_tokens) > max_chunk_tokens:
-        print(f"   ⚠️  WARNING: Chunk is too large ({len(chunk_tokens):,} tokens). Truncating to fit context window.")
-        chunk_tokens = chunk_tokens[:max_chunk_tokens] # Keep the beginning of the chunk
+PRIV VARIANT APPS ANALYSIS:
+- Total unique apps: {var_analysis['total_unique']}
+- Total occurrences: {var_analysis['total_occurrences']}
+- Most common apps: {var_analysis['most_common']}
+- Apps appearing only once: {len(var_analysis['single_occurrence_apps'])}
+- Dominant apps (>1 occurrence): {var_analysis['dominant_apps']}
 
-    # 4. Decode the (potentially truncated) tokens back into a clean string.
-    safe_chunk_text = tokenizer.decode(chunk_tokens, skip_special_tokens=True)
+=== ANALYSIS INSTRUCTIONS ===
 
-    # 5. Assemble the final, guaranteed-to-fit prompt.
-    final_prompt = prompt_template.format(chunk_text=safe_chunk_text)
-    
-    # Now, call the generation function.
-    result = generate_text(model, tokenizer, final_prompt, max_new_tokens)
-    print(f"✅ Chunk {chunk_num} processed ({len(result):,} characters)")
-    
-    return result
+Please provide a structured analysis with the following sections:
 
-def combine_chunks(chunk_results: List[str]) -> str:
-    """Combine processed chunks into final document."""
-    print(f"\n🔗 Combining {len(chunk_results)} chunks...")
-    
-    # Simply concatenate - each chunk should be self-contained weeks
-    combined = "\n\n".join(chunk_results)
-    
-    print(f"✅ Combined into {len(combined):,} characters\n")
-    return combined
+1. **PRIV BASE APPS INSIGHT** (2-3 sentences):
+   - Identify patterns: Are certain apps consistently present?
+   - Note if one or two apps dominate across combinations
+   - Highlight any anomalies (e.g., an app only in one combination)
+
+2. **PRIV VARIANT APPS INSIGHT** (2-3 sentences):
+   - Same analysis as above for variant apps
+   - Note any differences in distribution pattern vs base apps
+
+3. **COMBINED ANALYSIS** (3-4 sentences):
+   - How do base and variant apps relate to each other?
+   - Are there fingerprint combinations with notably more/fewer apps?
+   - What does the overall distribution suggest about this device/build configuration?
+
+4. **KEY FINDINGS** (bullet points):
+   - List 2-4 actionable observations
+   - Include any recommendations if patterns suggest issues
+
+Keep the response concise, professional, and data-driven. Focus on patterns that would matter to a system configuration engineer."""
+
+    return prompt
 
 
-def markdown_to_docx(markdown_text: str, output_path: Path):
-    """Convert markdown to Word document."""
-    print(f"📝 Creating Word document...")
+def generate_device_build_insight(device: str, build_type: str, data: Dict) -> Dict:
+    """
+    Generate comprehensive insights for a specific device/build type combination.
     
-    doc = Document()
+    Returns a dictionary with:
+    - raw_statistics: Numerical analysis
+    - llm_insight: AI-generated narrative insight
+    - key_findings: Extracted key points
+    """
+    combinations = data.get('combinations', [])
     
-    # Title page
-    doc.add_heading('Weekly Reports - Reconstructed', 0)
-    doc.add_paragraph(f'Generated: {datetime.now().strftime("%Y-%m-%d %H:%M")}')
-    doc.add_page_break()
+    # Collect statistics
+    all_base_apps = []
+    all_var_apps = []
     
-    lines = markdown_text.split('\n')
+    for combo in combinations:
+        all_base_apps.extend(combo.get('priv_base_apps', []))
+        all_var_apps.extend(combo.get('priv_var_apps', []))
     
-    for line in lines:
-        line = line.strip()
-        
-        if not line:
-            continue
-        
-        # Headings
-        if line.startswith('# '):
-            doc.add_heading(line[2:], 1)
-        elif line.startswith('## '):
-            doc.add_heading(line[3:], 2)
-        elif line.startswith('### '):
-            doc.add_heading(line[4:], 3)
-        elif line.startswith('#### '):
-            doc.add_heading(line[5:], 4)
-        
-        # Bullet points
-        elif line.startswith('- ') or line.startswith('* '):
-            # Count indentation
-            indent_level = 0
-            temp_line = line
-            while temp_line.startswith('  '):
-                indent_level += 1
-                temp_line = temp_line[2:]
+    base_stats = analyze_app_distribution([all_base_apps])
+    var_stats = analyze_app_distribution([all_var_apps])
+    
+    # Build prompt and try LLM first
+    prompt = build_analysis_prompt(device, build_type, data)
+    llm_response = call_ollama(prompt)
+    
+    # If Ollama failed, use intelligent fallback
+    if llm_response is None:
+        llm_response = generate_intelligent_insight(device, build_type, data)
+    
+    return {
+        'device': device,
+        'build_type': build_type,
+        'statistics': {
+            'total_combinations': len(combinations),
+            'unique_fingerprints': data.get('unique_fingerprints_parsed', []),
+            'unique_same_device_fps': data.get('unique_same_device_fps_parsed', []),
+            'priv_base_apps': {
+                'total_unique': base_stats['total_unique'],
+                'total_occurrences': base_stats['total_occurrences'],
+                'most_common': base_stats['most_common'],
+                'dominant_apps': base_stats['dominant_apps']
+            },
+            'priv_var_apps': {
+                'total_unique': var_stats['total_unique'],
+                'total_occurrences': var_stats['total_occurrences'],
+                'most_common': var_stats['most_common'],
+                'dominant_apps': var_stats['dominant_apps']
+            }
+        },
+        'llm_insight': llm_response,
+        'combinations_data': combinations
+    }
+
+
+def generate_all_insights(report_data: Dict) -> Dict:
+    """
+    Generate insights for all device/build type combinations in the report.
+    
+    Args:
+        report_data: The loaded fingerprint_report.json data
+    
+    Returns:
+        Dictionary with insights for each device/build combination
+    """
+    results = report_data.get('results', {})
+    all_insights = {
+        'generated_at': str(__import__('datetime').datetime.now()),
+        'device_insights': []
+    }
+    
+    for device, build_types in results.items():
+        for build_type, data in build_types.items():
+            print(f"\nGenerating insight for Device: {device}, Build Type: {build_type}...")
             
-            content = line.lstrip('- *').strip()
+            insight = generate_device_build_insight(device, build_type, data)
+            all_insights['device_insights'].append(insight)
             
-            # Handle bold
-            if '**' in content:
-                p = doc.add_paragraph(style='List Bullet' if indent_level == 0 else 'List Bullet 2')
-                parts = content.split('**')
-                for i, part in enumerate(parts):
-                    if i % 2 == 0:
-                        p.add_run(part)
-                    else:
-                        p.add_run(part).bold = True
-            else:
-                style = 'List Bullet' if indent_level == 0 else 'List Bullet 2'
-                doc.add_paragraph(content, style=style)
-        
-        # Numbered lists
-        elif re.match(r'^\d+\.\s', line):
-            content = re.sub(r'^\d+\.\s', '', line)
-            doc.add_paragraph(content, style='List Number')
-        
-        # Regular paragraphs
-        else:
-            if '**' in line:
-                p = doc.add_paragraph()
-                parts = line.split('**')
-                for i, part in enumerate(parts):
-                    if i % 2 == 0:
-                        p.add_run(part)
-                    else:
-                        p.add_run(part).bold = True
-            else:
-                doc.add_paragraph(line)
+            print(f"  ✓ Generated insight with {insight['statistics']['total_combinations']} combinations")
     
-    doc.save(str(output_path))
-    print(f"✅ Saved: {output_path}\n")
+    return all_insights
 
 
 def main():
-    """Main workflow with chunking support."""
-    
-    parser = argparse.ArgumentParser(
-        description='Consolidate weekly reports with automatic chunking for large PDFs'
-    )
-    parser.add_argument('--pdf', type=str, required=True, help='Path to PDF')
-    parser.add_argument('--output', type=str, default='./output', help='Output directory')
-    parser.add_argument('--model', type=str, default='openai/gpt-oss-120b', help='Model ID')
-    parser.add_argument('--max-output-tokens', type=int, default=5000, help='Max output tokens per chunk')
-    parser.add_argument('--max-input-tokens', type=int, default=90000, help='Max input tokens per chunk')
+    parser = argparse.ArgumentParser(description='Generate LLM-powered insights from fingerprint data')
+    parser.add_argument('--input', '-i', default='fingerprint_report.json', help='Input JSON file')
+    parser.add_argument('--output', '-o', default='insights_report.json', help='Output insights JSON file')
+    parser.add_argument('--model', '-m', default='llama3.2', help='Ollama model to use')
     
     args = parser.parse_args()
     
-    pdf_path = Path(args.pdf)
-    output_dir = Path(args.output)
+    print("="*60)
+    print("LLM-POWERED INSIGHTS GENERATOR")
+    print("="*60)
     
-    if not pdf_path.exists():
-        print(f"❌ ERROR: PDF not found: {pdf_path}")
-        return 1
+    # Load the processed data
+    print(f"\nLoading data from {args.input}...")
+    with open(args.input, 'r') as f:
+        report_data = json.load(f)
     
-    output_dir.mkdir(parents=True, exist_ok=True)
+    # Generate insights
+    print("\nGenerating insights using Ollama...")
+    insights = generate_all_insights(report_data)
     
-    print_environment_info()
+    # Save insights
+    print(f"\nSaving insights to {args.output}...")
+    with open(args.output, 'w') as f:
+        json.dump(insights, f, indent=2)
     
-    print("=" * 70)
-    print("📊 WEEKLY REPORTS RECONSTRUCTION WITH CHUNKING")
-    print("=" * 70)
-    print(f"\n📄 Input: {pdf_path}")
-    print(f"📁 Output: {output_dir}")
-    print(f"⚙️  Max input tokens: {args.max_input_tokens:,}")
-    print(f"⚙️  Max output tokens per chunk: {args.max_output_tokens:,}\n")
+    print("\n" + "="*60)
+    print("INSIGHTS GENERATION COMPLETE")
+    print("="*60)
     
-    # Load model and tokenizer
-    model, tokenizer = load_model_and_tokenizer(args.model)
-    
-    # Extract PDF
-    raw_text = extract_text_from_pdf(pdf_path)
-    
-    # Save raw text
-    raw_path = output_dir / "01_raw_extracted_text.txt"
-    raw_path.write_text(raw_text, encoding='utf-8')
-    print(f"💾 Saved: {raw_path}\n")
-    
-    # Count tokens in full text
-    print("🔢 Counting tokens in full text...")
-    total_tokens = count_tokens(raw_text, tokenizer)
-    print(f"   Total tokens: {total_tokens:,}")
-    print(f"   Total characters: {len(raw_text):,}")
-    print(f"   Total words: {len(raw_text.split()):,}\n")
-    
-    # Check if we need chunking
-    if total_tokens > args.max_input_tokens:
-        print(f"⚠️  Input ({total_tokens:,} tokens) exceeds limit ({args.max_input_tokens:,} tokens)")
-        print(f"   Will process in chunks...\n")
-        
-        # Chunk the text
-        chunks = chunk_text_by_tokens(raw_text, tokenizer, args.max_input_tokens)
-        
-        # Process each chunk
-        chunk_results = []
-        for i, chunk in enumerate(chunks, 1):
-            result = process_chunk(chunk, i, len(chunks), model, tokenizer, args.max_output_tokens)
-            chunk_results.append(result)
-            
-            # Save intermediate result
-            chunk_path = output_dir / f"chunk_{i:02d}_result.md"
-            chunk_path.write_text(result, encoding='utf-8')
-            print(f"   💾 Saved intermediate: {chunk_path}")
-        
-        # Combine chunks
-        final_markdown = combine_chunks(chunk_results)
-        
-    else:
-        print(f"✅ Input fits in single chunk ({total_tokens:,} tokens)\n")
-        
-        # Process in single chunk
-        final_markdown = process_chunk(raw_text, 1, 1, model, tokenizer, args.max_output_tokens)
-    
-    # Save final markdown
-    md_path = output_dir / "02_reconstructed_report.md"
-    md_path.write_text(final_markdown, encoding='utf-8')
-    print(f"💾 Saved: {md_path}\n")
-    
-    # Create Word document
-    docx_path = output_dir / "03_reconstructed_report.docx"
-    markdown_to_docx(final_markdown, docx_path)
-    
-    print("=" * 70)
-    print("✅ COMPLETE")
-    print("=" * 70)
-    print(f"\n📁 Outputs in {output_dir}:")
-    print(f"   1. {raw_path.name} - Raw extracted text")
-    print(f"   2. {md_path.name} - Reconstructed markdown")
-    print(f"   3. {docx_path.name} - Word document")
-    
-    if total_tokens > args.max_input_tokens:
-        print(f"\n   📦 Also saved {len(chunks)} intermediate chunk results")
-    
-    print(f"\n📊 Statistics:")
-    print(f"   Input: {total_tokens:,} tokens")
-    print(f"   Output: {len(final_markdown):,} characters")
-    print(f"\n🎉 Your weekly reports have been reconstructed!\n")
-    
-    return 0
+    # Print summary
+    for insight in insights['device_insights']:
+        print(f"\n--- {insight['device']} / {insight['build_type']} ---")
+        print(f"Combinations: {insight['statistics']['total_combinations']}")
+        print(f"Unique Base Apps: {insight['statistics']['priv_base_apps']['total_unique']}")
+        print(f"Unique Var Apps: {insight['statistics']['priv_var_apps']['total_unique']}")
+        print(f"\nLLM Insight Preview:")
+        print(insight['llm_insight'][:500] + "..." if len(insight['llm_insight']) > 500 else insight['llm_insight'])
 
 
 if __name__ == "__main__":
-    exit(main())
+    main()
