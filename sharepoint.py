@@ -1,415 +1,821 @@
 """
-LLM-Powered Insights Generator for Fingerprint Data
+Fingerprint Grouping Report Generator (Non-LLM Version)
 
-This module uses Ollama to generate intelligent insights about the fingerprint
-grouping data, analyzing patterns in priv_base_apps and priv_var_apps across
-devices and build types.
+This script processes a CSV file containing device fingerprint data,
+groups and filters by fingerprint combinations, and generates a 
+professional Word document report.
 
 Usage:
-    python generate_insights.py --input fingerprint_report.json --output insights_report.json
+    python report.py --input your_data.csv --output report.docx
+    
+    Or with sample data for testing:
+    python report.py --sample --output report.docx
+
+Required columns in CSV:
+    - fingerprint
+    - same_device_fingerprints  
+    - priv_base_apps
+    - priv_var_apps
+    - build_type
+    - device
 """
 
+import pandas as pd
 import json
 import subprocess
-from typing import Dict, List, Any
-from collections import Counter
 import argparse
+import os
+import tempfile
+from collections import Counter
+from typing import Dict, List, Any
 
 
-def call_ollama(prompt: str, model: str = "llama3.2") -> str:
+# ============================================================================
+# FINGERPRINT PARSING
+# ============================================================================
+
+def parse_fingerprint(fingerprint_value: str) -> str:
     """
-    Call Ollama API to generate text.
+    Parse fingerprint to extract the word between first and second "/",
+    take last 3 characters, and capitalize them.
     
-    Args:
-        prompt: The prompt to send to the model
-        model: The Ollama model to use (default: llama3.2)
+    Example: "google/sunfish/sunfish:11/RQ3A.210805.001.A1" -> "ISH"
+             (sunfish -> ish -> ISH)
     
-    Returns:
-        Generated text response
+    If fingerprint doesn't match expected format, return original value.
     """
-    try:
-        # Use subprocess to call ollama
-        result = subprocess.run(
-            ["ollama", "run", model],
-            input=prompt,
-            capture_output=True,
-            text=True,
-            timeout=120
-        )
-        
-        if result.returncode == 0:
-            return result.stdout.strip()
+    if not isinstance(fingerprint_value, str):
+        return str(fingerprint_value)
+    
+    parts = fingerprint_value.split('/')
+    
+    if len(parts) >= 2:
+        # Get the word between first and second "/"
+        word = parts[1]
+        # Take last 3 characters and capitalize
+        if len(word) >= 3:
+            return word[-3:].upper()
         else:
-            print(f"Ollama error: {result.stderr}")
-            return None
-            
-    except subprocess.TimeoutExpired:
-        print("Ollama timed out")
-        return None
-    except FileNotFoundError:
-        print("Ollama not found, using intelligent fallback insights")
-        return None
-    except Exception as e:
-        print(f"Error calling Ollama: {e}")
-        return None
+            return word.upper()
+    
+    # If format doesn't match, return original
+    return str(fingerprint_value)
 
 
-def generate_intelligent_insight(device: str, build_type: str, data: Dict) -> str:
+# ============================================================================
+# DATA PROCESSING
+# ============================================================================
+
+def get_unique_values(df: pd.DataFrame, column: str) -> List[Any]:
+    """Get unique non-null values from a column."""
+    return df[column].dropna().unique().tolist()
+
+
+def flatten_apps(apps_list: List) -> List[str]:
+    """Flatten list of apps, handling string representations of lists."""
+    flattened = []
+    for item in apps_list:
+        if isinstance(item, str):
+            # Try to parse as JSON list
+            try:
+                parsed = json.loads(item.replace("'", '"'))
+                if isinstance(parsed, list):
+                    flattened.extend(parsed)
+                else:
+                    flattened.append(str(parsed))
+            except (json.JSONDecodeError, ValueError):
+                # Just use the string as-is
+                flattened.append(item)
+        elif isinstance(item, list):
+            flattened.extend(item)
+        else:
+            flattened.append(str(item))
+    
+    # Remove duplicates while preserving order
+    seen = set()
+    unique_flattened = []
+    for item in flattened:
+        if item not in seen:
+            seen.add(item)
+            unique_flattened.append(item)
+    
+    return unique_flattened
+
+
+def process_fingerprint_data(df: pd.DataFrame) -> Dict:
     """
-    Generate intelligent insights based on data analysis when LLM is unavailable.
-    This provides meaningful analysis based on statistical patterns.
-    """
-    combinations = data.get('combinations', [])
+    Main processing function that implements the grouping and filtering logic.
     
-    # Collect all apps
-    all_base_apps = []
-    all_var_apps = []
-    combo_sizes = []
-    
-    for combo in combinations:
-        base = combo.get('priv_base_apps', [])
-        var = combo.get('priv_var_apps', [])
-        all_base_apps.extend(base)
-        all_var_apps.extend(var)
-        combo_sizes.append((len(base), len(var)))
-    
-    # Analyze
-    base_counter = Counter(all_base_apps)
-    var_counter = Counter(all_var_apps)
-    
-    base_unique = len(base_counter)
-    var_unique = len(var_counter)
-    base_total = len(all_base_apps)
-    var_total = len(all_var_apps)
-    
-    # Find dominant apps
-    base_dominant = [app for app, count in base_counter.items() if count > 1]
-    var_dominant = [app for app, count in var_counter.items() if count > 1]
-    
-    # Find single-occurrence apps
-    base_single = [app for app, count in base_counter.items() if count == 1]
-    var_single = [app for app, count in var_counter.items() if count == 1]
-    
-    # Calculate average apps per combination
-    avg_base = base_total / len(combinations) if combinations else 0
-    avg_var = var_total / len(combinations) if combinations else 0
-    
-    # Build insight text
-    insights = []
-    
-    # PRIV BASE APPS INSIGHT
-    insights.append("**PRIV BASE APPS INSIGHT**")
-    if base_dominant:
-        insights.append(f"Analysis identified {len(base_dominant)} dominant base app(s) appearing across multiple combinations: {', '.join(base_dominant[:3])}. These represent core privileged applications consistently required for this device configuration.")
-    elif base_unique == base_total:
-        insights.append(f"All {base_unique} base apps are unique across combinations, indicating highly specialized privileged application requirements for each fingerprint pairing. No single app dominates the configuration.")
-    else:
-        insights.append(f"The {base_unique} unique base apps show a distributed pattern across {len(combinations)} combinations, averaging {avg_base:.1f} apps per combination.")
-    
-    if len(base_single) > base_unique * 0.7:
-        insights.append(f"Notable: {len(base_single)} apps ({len(base_single)*100//base_unique}%) appear only once, suggesting fingerprint-specific base app requirements.")
-    
-    # PRIV VARIANT APPS INSIGHT
-    insights.append("\n**PRIV VARIANT APPS INSIGHT**")
-    if var_dominant:
-        insights.append(f"Variant apps show {len(var_dominant)} recurring application(s): {', '.join(var_dominant[:3])}. These likely represent shared system components across device variants.")
-    elif var_unique == var_total:
-        insights.append(f"Each of the {var_unique} variant apps is unique to its combination, indicating distinct customization per fingerprint configuration.")
-    else:
-        insights.append(f"The variant app distribution shows {var_unique} unique apps averaging {avg_var:.1f} per combination.")
-    
-    # COMBINED ANALYSIS
-    insights.append("\n**COMBINED ANALYSIS**")
-    
-    # Compare distributions
-    if base_unique > var_unique:
-        insights.append(f"Base apps ({base_unique}) show more diversity than variant apps ({var_unique}), suggesting privileged base configurations are more variable than system variants for this build type.")
-    elif var_unique > base_unique:
-        insights.append(f"Variant apps ({var_unique}) exceed base app diversity ({base_unique}), indicating system customization varies more than core privileged app requirements.")
-    else:
-        insights.append(f"Base and variant apps show similar diversity ({base_unique} each), suggesting balanced configuration complexity.")
-    
-    # Analyze combination sizes
-    max_combo = max(combo_sizes, key=lambda x: x[0] + x[1])
-    min_combo = min(combo_sizes, key=lambda x: x[0] + x[1])
-    
-    if max_combo != min_combo:
-        insights.append(f"Combination complexity ranges from {sum(min_combo)} to {sum(max_combo)} total apps, indicating variable configuration requirements across fingerprint pairings.")
-    
-    # KEY FINDINGS
-    insights.append("\n**KEY FINDINGS**")
-    findings = []
-    
-    if base_dominant:
-        findings.append(f"• Core dependencies: {', '.join(base_dominant[:2])} appear in multiple configurations")
-    if len(base_single) > 2:
-        findings.append(f"• {len(base_single)} specialized base apps suggest fingerprint-specific requirements")
-    if avg_base > 2:
-        findings.append(f"• High base app density ({avg_base:.1f} avg) indicates complex privileged requirements")
-    if var_unique < base_unique:
-        findings.append(f"• Variant apps are more standardized than base apps across this configuration")
-    
-    if not findings:
-        findings.append(f"• Configuration shows standard distribution with {len(combinations)} combinations")
-        findings.append(f"• No single app dominates - distributed privileged requirements")
-    
-    insights.extend(findings)
-    
-    return "\n".join(insights)
-
-
-def analyze_app_distribution(apps_list: List[str]) -> Dict:
-    """
-    Analyze the distribution and patterns in an apps list.
-    
-    Returns statistics about:
-    - Total unique apps
-    - Most common apps
-    - App frequency distribution
-    """
-    all_apps = []
-    for apps in apps_list:
-        if isinstance(apps, list):
-            all_apps.extend(apps)
-        elif isinstance(apps, str):
-            all_apps.append(apps)
-    
-    counter = Counter(all_apps)
-    
-    return {
-        'total_unique': len(counter),
-        'total_occurrences': len(all_apps),
-        'most_common': counter.most_common(5),
-        'frequency_distribution': dict(counter),
-        'single_occurrence_apps': [app for app, count in counter.items() if count == 1],
-        'dominant_apps': [app for app, count in counter.items() if count > 1]
-    }
-
-
-def build_analysis_prompt(device: str, build_type: str, data: Dict) -> str:
-    """
-    Build a comprehensive prompt for LLM analysis of a device/build combination.
-    
-    This prompt is designed to extract meaningful insights about:
-    1. Individual column patterns (priv_base_apps, priv_var_apps)
-    2. Combined patterns and correlations
-    3. Anomalies and notable observations
-    """
-    combinations = data.get('combinations', [])
-    
-    # Collect all apps for analysis
-    all_base_apps = []
-    all_var_apps = []
-    combination_details = []
-    
-    for combo in combinations:
-        fp = combo.get('fingerprint_parsed', combo.get('fingerprint', 'Unknown'))
-        sdp = combo.get('same_device_fingerprint_parsed', combo.get('same_device_fingerprint', 'Unknown'))
-        base_apps = combo.get('priv_base_apps', [])
-        var_apps = combo.get('priv_var_apps', [])
-        
-        all_base_apps.extend(base_apps)
-        all_var_apps.extend(var_apps)
-        
-        combination_details.append({
-            'fingerprint': fp,
-            'same_device_fp': sdp,
-            'base_apps': base_apps,
-            'var_apps': var_apps
-        })
-    
-    # Analyze distributions
-    base_analysis = analyze_app_distribution([all_base_apps])
-    var_analysis = analyze_app_distribution([all_var_apps])
-    
-    # Build the prompt
-    prompt = f"""You are a senior Android system analyst reviewing privileged application data for device configurations.
-
-TASK: Analyze the following data for Device "{device}" with Build Type "{build_type}" and provide actionable insights.
-
-=== RAW DATA ===
-Total Fingerprint Combinations: {len(combinations)}
-Unique Fingerprints: {data.get('unique_fingerprints_parsed', data.get('unique_fingerprints', []))}
-Unique Same-Device Fingerprints: {data.get('unique_same_device_fps_parsed', data.get('unique_same_device_fps', []))}
-
-=== COMBINATION BREAKDOWN ===
-"""
-    
-    for i, detail in enumerate(combination_details, 1):
-        prompt += f"""
-Combination {i}:
-  Fingerprint: {detail['fingerprint']}
-  Same Device FP: {detail['same_device_fp']}
-  Priv Base Apps ({len(detail['base_apps'])}): {', '.join(detail['base_apps']) if detail['base_apps'] else 'None'}
-  Priv Variant Apps ({len(detail['var_apps'])}): {', '.join(detail['var_apps']) if detail['var_apps'] else 'None'}
-"""
-
-    prompt += f"""
-=== STATISTICAL SUMMARY ===
-
-PRIV BASE APPS ANALYSIS:
-- Total unique apps: {base_analysis['total_unique']}
-- Total occurrences: {base_analysis['total_occurrences']}
-- Most common apps: {base_analysis['most_common']}
-- Apps appearing only once: {len(base_analysis['single_occurrence_apps'])}
-- Dominant apps (>1 occurrence): {base_analysis['dominant_apps']}
-
-PRIV VARIANT APPS ANALYSIS:
-- Total unique apps: {var_analysis['total_unique']}
-- Total occurrences: {var_analysis['total_occurrences']}
-- Most common apps: {var_analysis['most_common']}
-- Apps appearing only once: {len(var_analysis['single_occurrence_apps'])}
-- Dominant apps (>1 occurrence): {var_analysis['dominant_apps']}
-
-=== ANALYSIS INSTRUCTIONS ===
-
-Please provide a structured analysis with the following sections:
-
-1. **PRIV BASE APPS INSIGHT** (2-3 sentences):
-   - Identify patterns: Are certain apps consistently present?
-   - Note if one or two apps dominate across combinations
-   - Highlight any anomalies (e.g., an app only in one combination)
-
-2. **PRIV VARIANT APPS INSIGHT** (2-3 sentences):
-   - Same analysis as above for variant apps
-   - Note any differences in distribution pattern vs base apps
-
-3. **COMBINED ANALYSIS** (3-4 sentences):
-   - How do base and variant apps relate to each other?
-   - Are there fingerprint combinations with notably more/fewer apps?
-   - What does the overall distribution suggest about this device/build configuration?
-
-4. **KEY FINDINGS** (bullet points):
-   - List 2-4 actionable observations
-   - Include any recommendations if patterns suggest issues
-
-Keep the response concise, professional, and data-driven. Focus on patterns that would matter to a system configuration engineer."""
-
-    return prompt
-
-
-def generate_device_build_insight(device: str, build_type: str, data: Dict) -> Dict:
-    """
-    Generate comprehensive insights for a specific device/build type combination.
-    
-    Returns a dictionary with:
-    - raw_statistics: Numerical analysis
-    - llm_insight: AI-generated narrative insight
-    - key_findings: Extracted key points
-    """
-    combinations = data.get('combinations', [])
-    
-    # Collect statistics
-    all_base_apps = []
-    all_var_apps = []
-    
-    for combo in combinations:
-        all_base_apps.extend(combo.get('priv_base_apps', []))
-        all_var_apps.extend(combo.get('priv_var_apps', []))
-    
-    base_stats = analyze_app_distribution([all_base_apps])
-    var_stats = analyze_app_distribution([all_var_apps])
-    
-    # Build prompt and try LLM first
-    prompt = build_analysis_prompt(device, build_type, data)
-    llm_response = call_ollama(prompt)
-    
-    # If Ollama failed, use intelligent fallback
-    if llm_response is None:
-        llm_response = generate_intelligent_insight(device, build_type, data)
-    
-    return {
-        'device': device,
-        'build_type': build_type,
-        'statistics': {
-            'total_combinations': len(combinations),
-            'unique_fingerprints': data.get('unique_fingerprints_parsed', []),
-            'unique_same_device_fps': data.get('unique_same_device_fps_parsed', []),
-            'priv_base_apps': {
-                'total_unique': base_stats['total_unique'],
-                'total_occurrences': base_stats['total_occurrences'],
-                'most_common': base_stats['most_common'],
-                'dominant_apps': base_stats['dominant_apps']
-            },
-            'priv_var_apps': {
-                'total_unique': var_stats['total_unique'],
-                'total_occurrences': var_stats['total_occurrences'],
-                'most_common': var_stats['most_common'],
-                'dominant_apps': var_stats['dominant_apps']
-            }
-        },
-        'llm_insight': llm_response,
-        'combinations_data': combinations
-    }
-
-
-def generate_all_insights(report_data: Dict) -> Dict:
-    """
-    Generate insights for all device/build type combinations in the report.
-    
-    Args:
-        report_data: The loaded fingerprint_report.json data
+    Algorithm:
+    1. For each unique device
+    2.   For each unique build_type in that device
+    3.     Get unique fingerprints and same_device_fingerprints
+    4.       For each fingerprint
+    5.         For each same_device_fingerprint
+    6.           Filter and collect priv_base_apps and priv_var_apps
     
     Returns:
-        Dictionary with insights for each device/build combination
+        Dict with hierarchical structure containing all processed data
     """
-    results = report_data.get('results', {})
-    all_insights = {
-        'generated_at': str(__import__('datetime').datetime.now()),
-        'device_insights': []
-    }
+    results = {}
+    
+    # Step 1: Get all unique devices
+    unique_devices = get_unique_values(df, 'device')
+    print(f"Found {len(unique_devices)} unique devices: {unique_devices}")
+    
+    for device in unique_devices:
+        results[device] = {}
+        
+        # Step 2: Filter by device
+        device_data = df[df['device'] == device]
+        
+        # Step 2.1: Get unique build types for this device
+        unique_build_types = get_unique_values(device_data, 'build_type')
+        print(f"  Device {device}: Found {len(unique_build_types)} build types: {unique_build_types}")
+        
+        for build_type in unique_build_types:
+            # Step 3: Filter by build type
+            build_data = device_data[device_data['build_type'] == build_type]
+            
+            # Step 3.1: Get unique fingerprints and same_device_fingerprints
+            unique_fingerprints = get_unique_values(build_data, 'fingerprint')
+            unique_same_device_fps = get_unique_values(build_data, 'same_device_fingerprints')
+            
+            # Parse fingerprints for display
+            unique_fingerprints_parsed = [parse_fingerprint(fp) for fp in unique_fingerprints]
+            unique_same_device_fps_parsed = [parse_fingerprint(sdp) for sdp in unique_same_device_fps]
+            
+            print(f"    Build Type {build_type}:")
+            print(f"      Unique fingerprints: {unique_fingerprints_parsed}")
+            print(f"      Unique same_device_fps: {unique_same_device_fps_parsed}")
+            
+            results[device][build_type] = {
+                'unique_fingerprints': unique_fingerprints,
+                'unique_fingerprints_parsed': unique_fingerprints_parsed,
+                'unique_same_device_fps': unique_same_device_fps,
+                'unique_same_device_fps_parsed': unique_same_device_fps_parsed,
+                'combinations': []
+            }
+            
+            # Step 4: For each fingerprint
+            for fp_idx, fp in enumerate(unique_fingerprints):
+                fp_data = build_data[build_data['fingerprint'] == fp]
+                fp_parsed = unique_fingerprints_parsed[fp_idx]
+                
+                # Step 5: For each same_device_fingerprint
+                for sdp_idx, sdp in enumerate(unique_same_device_fps):
+                    # Step 6: Filter and collect
+                    filtered_rows = fp_data[fp_data['same_device_fingerprints'] == sdp]
+                    sdp_parsed = unique_same_device_fps_parsed[sdp_idx]
+                    
+                    if not filtered_rows.empty:
+                        # Collect priv_base_apps and priv_var_apps
+                        priv_base_apps = filtered_rows['priv_base_apps'].dropna().tolist()
+                        priv_var_apps = filtered_rows['priv_var_apps'].dropna().tolist()
+                        
+                        # Flatten if they contain lists stored as strings
+                        priv_base_apps = flatten_apps(priv_base_apps)
+                        priv_var_apps = flatten_apps(priv_var_apps)
+                        
+                        combination = {
+                            'fingerprint': fp,
+                            'fingerprint_parsed': fp_parsed,
+                            'same_device_fingerprint': sdp,
+                            'same_device_fingerprint_parsed': sdp_parsed,
+                            'priv_base_apps': priv_base_apps,
+                            'priv_var_apps': priv_var_apps
+                        }
+                        
+                        results[device][build_type]['combinations'].append(combination)
+                        print(f"        FP={fp_parsed}, SDP={sdp_parsed}: {len(priv_base_apps)} base, {len(priv_var_apps)} var apps")
+    
+    return results
+
+
+def generate_report_sections(results: Dict) -> List[Dict]:
+    """
+    Transform results into a flat structure suitable for report generation.
+    """
+    report_sections = []
     
     for device, build_types in results.items():
         for build_type, data in build_types.items():
-            print(f"\nGenerating insight for Device: {device}, Build Type: {build_type}...")
-            
-            insight = generate_device_build_insight(device, build_type, data)
-            all_insights['device_insights'].append(insight)
-            
-            print(f"  ✓ Generated insight with {insight['statistics']['total_combinations']} combinations")
+            section = {
+                'device': device,
+                'build_type': build_type,
+                'unique_fingerprints': data['unique_fingerprints'],
+                'unique_fingerprints_parsed': data['unique_fingerprints_parsed'],
+                'unique_same_device_fps': data['unique_same_device_fps'],
+                'unique_same_device_fps_parsed': data['unique_same_device_fps_parsed'],
+                'combinations': data['combinations']
+            }
+            report_sections.append(section)
     
-    return all_insights
+    return report_sections
 
+
+# ============================================================================
+# SAMPLE DATA (for testing)
+# ============================================================================
+
+def create_sample_data() -> pd.DataFrame:
+    """Create sample data with realistic fingerprints for testing."""
+    data = {
+        'fingerprint': [
+            "google/sunfish/sunfish:11/RQ3A.210805",
+            "google/sunfish/sunfish:11/RQ3A.210805",
+            "google/sunfish/sunfish:11/RQ3A.210805",
+            "google/redfin/redfin:11/RQ3A.210705",
+            "google/redfin/redfin:11/RQ3A.210705",
+            "google/bramble/bramble:11/RQ3A.210605",
+            "google/bramble/bramble:11/RQ3A.210605",
+            "google/sunfish/sunfish:11/RQ3A.210805",
+            "google/sunfish/sunfish:11/RQ3A.210805",
+            "google/redfin/redfin:11/RQ3A.210705",
+            "google/redfin/redfin:11/RQ3A.210705",
+        ],
+        'same_device_fingerprints': [
+            "google/oriole/oriole:12/SQ1D.220105",
+            "google/raven/raven:12/SQ1D.220205",
+            "google/panther/panther:13/TQ1A.230305",
+            "google/oriole/oriole:12/SQ1D.220105",
+            "google/raven/raven:12/SQ1D.220205",
+            "google/raven/raven:12/SQ1D.220205",
+            "google/panther/panther:13/TQ1A.230305",
+            "google/oriole/oriole:12/SQ1D.220105",
+            "google/raven/raven:12/SQ1D.220205",
+            "google/oriole/oriole:12/SQ1D.220105",
+            "google/panther/panther:13/TQ1A.230305",
+        ],
+        'priv_base_apps': [
+            "['com.google.camera', 'com.google.dialer']", 
+            "['com.google.messages']", 
+            "['com.google.photos', 'com.google.drive']",
+            "['com.google.calendar']", 
+            "['com.google.maps', 'com.google.chrome']", 
+            "['com.google.assistant']", 
+            "['com.google.translate', 'com.google.docs', 'com.google.sheets']",
+            "['com.google.gmail']", 
+            "['com.google.meet']", 
+            "['com.google.keep']", 
+            "['com.google.files']"
+        ],
+        'priv_var_apps': [
+            "['com.android.systemui']", 
+            "['com.android.settings', 'com.android.launcher']", 
+            "['com.android.bluetooth']",
+            "['com.android.wifi', 'com.android.nfc']", 
+            "['com.android.phone']", 
+            "['com.android.contacts']", 
+            "['com.android.calculator', 'com.android.clock']",
+            "['com.android.gallery']", 
+            "['com.android.music']", 
+            "['com.android.browser']", 
+            "['com.android.email']"
+        ],
+        'build_type': ['userdebug', 'userdebug', 'userdebug', 'userdebug', 'userdebug', 
+                       'userdebug', 'userdebug', 'user', 'user', 'user', 'user'],
+        'device': ['Pixel_4a'] * 11
+    }
+    
+    # Add another device
+    data2 = {
+        'fingerprint': [
+            "samsung/beyond/beyond1:10/QP1A.190711",
+            "samsung/canvas/canvas:10/QP1A.190811",
+            "samsung/beyond/beyond1:10/QP1A.190711",
+            "samsung/canvas/canvas:10/QP1A.190811"
+        ],
+        'same_device_fingerprints': [
+            "samsung/gts7/gts7xl:11/RP1A.200720",
+            "samsung/gts7/gts7xl:11/RP1A.200720",
+            "samsung/a52/a52q:11/RP1A.200820",
+            "samsung/a52/a52q:11/RP1A.200820"
+        ],
+        'priv_base_apps': [
+            "['com.samsung.camera']", 
+            "['com.samsung.gallery', 'com.samsung.notes']", 
+            "['com.samsung.browser']", 
+            "['com.samsung.health']"
+        ],
+        'priv_var_apps': [
+            "['com.sec.android.app.launcher']", 
+            "['com.sec.android.app.clock']", 
+            "['com.sec.android.app.calculator']", 
+            "['com.sec.android.app.music']"
+        ],
+        'build_type': ['eng', 'eng', 'eng', 'eng'],
+        'device': ['Galaxy_S10', 'Galaxy_S10', 'Galaxy_S10', 'Galaxy_S10']
+    }
+    
+    df1 = pd.DataFrame(data)
+    df2 = pd.DataFrame(data2)
+    
+    return pd.concat([df1, df2], ignore_index=True)
+
+
+# ============================================================================
+# JAVASCRIPT DOCUMENT GENERATOR
+# ============================================================================
+
+def get_js_generator_code() -> str:
+    """
+    Returns the JavaScript code for generating the Word document.
+    This uses docx-js library for professional formatting.
+    """
+    return '''
+const {
+    Document, Packer, Paragraph, TextRun, Table, TableRow, TableCell,
+    Header, Footer, AlignmentType, HeadingLevel, BorderStyle, WidthType, 
+    ShadingType, VerticalAlign, PageNumber, PageBreak
+} = require('docx');
+const fs = require('fs');
+
+// Load data from JSON
+const reportData = JSON.parse(fs.readFileSync('report_data.json', 'utf8'));
+
+// Color scheme
+const colors = {
+    primary: "1F4E79",
+    secondary: "2E75B6",
+    accent: "5B9BD5",
+    headerBg: "D6E3F0",
+    tableBorder: "B4C6E7",
+    altRow: "F2F7FB",
+    text: "333333",
+    lightText: "666666"
+};
+
+// Table styling
+const tableBorder = { style: BorderStyle.SINGLE, size: 8, color: colors.tableBorder };
+const cellBorders = { top: tableBorder, bottom: tableBorder, left: tableBorder, right: tableBorder };
+const headerBorders = { 
+    top: { style: BorderStyle.SINGLE, size: 12, color: colors.primary }, 
+    bottom: { style: BorderStyle.SINGLE, size: 12, color: colors.primary }, 
+    left: tableBorder, 
+    right: tableBorder 
+};
+
+function createHeaderCell(text, width) {
+    return new TableCell({
+        borders: headerBorders,
+        width: { size: width, type: WidthType.DXA },
+        shading: { fill: colors.headerBg, type: ShadingType.CLEAR },
+        verticalAlign: VerticalAlign.CENTER,
+        children: [
+            new Paragraph({
+                alignment: AlignmentType.CENTER,
+                spacing: { before: 100, after: 100 },
+                children: [
+                    new TextRun({
+                        text: text,
+                        bold: true,
+                        size: 24,
+                        color: colors.primary,
+                        font: "Arial"
+                    })
+                ]
+            })
+        ]
+    });
+}
+
+function createDataCell(content, width, isAltRow = false) {
+    const children = [];
+    
+    if (Array.isArray(content) && content.length > 0) {
+        content.forEach((item) => {
+            children.push(
+                new Paragraph({
+                    spacing: { before: 60, after: 60 },
+                    indent: { left: 200 },
+                    children: [
+                        new TextRun({
+                            text: "• " + item,
+                            size: 22,
+                            color: colors.text,
+                            font: "Arial"
+                        })
+                    ]
+                })
+            );
+        });
+    } else {
+        children.push(
+            new Paragraph({
+                alignment: AlignmentType.CENTER,
+                spacing: { before: 80, after: 80 },
+                children: [
+                    new TextRun({
+                        text: "—",
+                        size: 22,
+                        color: "999999",
+                        font: "Arial"
+                    })
+                ]
+            })
+        );
+    }
+    
+    return new TableCell({
+        borders: cellBorders,
+        width: { size: width, type: WidthType.DXA },
+        shading: isAltRow ? { fill: colors.altRow, type: ShadingType.CLEAR } : undefined,
+        verticalAlign: VerticalAlign.CENTER,
+        children: children
+    });
+}
+
+function createAppsTable(privBaseApps, privVarApps) {
+    const colWidths = [4680, 4680];
+    
+    return new Table({
+        columnWidths: colWidths,
+        rows: [
+            new TableRow({
+                tableHeader: true,
+                children: [
+                    createHeaderCell("Priv Base Apps", colWidths[0]),
+                    createHeaderCell("Priv Variant Apps", colWidths[1])
+                ]
+            }),
+            new TableRow({
+                children: [
+                    createDataCell(privBaseApps, colWidths[0]),
+                    createDataCell(privVarApps, colWidths[1])
+                ]
+            })
+        ]
+    });
+}
+
+function createDivider() {
+    return new Paragraph({
+        spacing: { before: 300, after: 300 },
+        border: {
+            bottom: { style: BorderStyle.SINGLE, size: 6, color: colors.tableBorder }
+        },
+        children: [new TextRun({ text: "" })]
+    });
+}
+
+function generateContent() {
+    const sections = reportData.report_sections || [];
+    let allContent = [];
+    
+    // Title
+    allContent.push(
+        new Paragraph({
+            alignment: AlignmentType.CENTER,
+            spacing: { before: 800, after: 300 },
+            children: [
+                new TextRun({
+                    text: "Fingerprint Grouping Report",
+                    bold: true,
+                    size: 52,
+                    color: colors.primary,
+                    font: "Arial"
+                })
+            ]
+        })
+    );
+    
+    allContent.push(
+        new Paragraph({
+            alignment: AlignmentType.CENTER,
+            spacing: { before: 100, after: 600 },
+            children: [
+                new TextRun({
+                    text: "Generated: " + new Date().toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' }),
+                    size: 22,
+                    color: colors.lightText,
+                    font: "Arial"
+                })
+            ]
+        })
+    );
+    
+    // Thick divider
+    allContent.push(
+        new Paragraph({
+            spacing: { before: 100, after: 400 },
+            border: {
+                bottom: { style: BorderStyle.SINGLE, size: 18, color: colors.primary }
+            },
+            children: [new TextRun({ text: "" })]
+        })
+    );
+    
+    let isFirstCombination = true;
+    let lastDeviceBuild = null;
+    
+    sections.forEach((section) => {
+        const device = section.device;
+        const buildType = section.build_type;
+        const combinations = section.combinations || [];
+        const currentDeviceBuild = device + "|" + buildType;
+        
+        combinations.forEach((combo) => {
+            const fp = combo.fingerprint_parsed || combo.fingerprint || 'Unknown';
+            const sdp = combo.same_device_fingerprint_parsed || combo.same_device_fingerprint || 'Unknown';
+            const privBaseApps = combo.priv_base_apps || [];
+            const privVarApps = combo.priv_var_apps || [];
+            
+            if (!isFirstCombination) {
+                allContent.push(createDivider());
+            }
+            isFirstCombination = false;
+            
+            // Device
+            allContent.push(
+                new Paragraph({
+                    spacing: { before: 200, after: 100 },
+                    children: [
+                        new TextRun({
+                            text: "Device: ",
+                            bold: true,
+                            size: 28,
+                            color: colors.primary,
+                            font: "Arial"
+                        }),
+                        new TextRun({
+                            text: String(device),
+                            size: 28,
+                            color: colors.text,
+                            font: "Arial"
+                        })
+                    ]
+                })
+            );
+            
+            // Build Type
+            allContent.push(
+                new Paragraph({
+                    spacing: { before: 80, after: 150 },
+                    children: [
+                        new TextRun({
+                            text: "Build Type: ",
+                            bold: true,
+                            size: 28,
+                            color: colors.primary,
+                            font: "Arial"
+                        }),
+                        new TextRun({
+                            text: String(buildType),
+                            size: 28,
+                            color: colors.text,
+                            font: "Arial"
+                        })
+                    ]
+                })
+            );
+            
+            // Fingerprint and Same Device Fingerprint
+            allContent.push(
+                new Paragraph({
+                    spacing: { before: 150, after: 200 },
+                    children: [
+                        new TextRun({
+                            text: "Fingerprint: ",
+                            bold: true,
+                            size: 24,
+                            color: colors.secondary,
+                            font: "Arial"
+                        }),
+                        new TextRun({
+                            text: String(fp),
+                            size: 24,
+                            color: colors.text,
+                            font: "Arial"
+                        }),
+                        new TextRun({
+                            text: "   |   ",
+                            size: 24,
+                            color: colors.tableBorder,
+                            font: "Arial"
+                        }),
+                        new TextRun({
+                            text: "Same Device Fingerprint: ",
+                            bold: true,
+                            size: 24,
+                            color: colors.secondary,
+                            font: "Arial"
+                        }),
+                        new TextRun({
+                            text: String(sdp),
+                            size: 24,
+                            color: colors.text,
+                            font: "Arial"
+                        })
+                    ]
+                })
+            );
+            
+            // Spacing
+            allContent.push(
+                new Paragraph({
+                    spacing: { before: 100, after: 100 },
+                    children: [new TextRun({ text: "" })]
+                })
+            );
+            
+            // Apps Table
+            allContent.push(createAppsTable(privBaseApps, privVarApps));
+        });
+    });
+    
+    return allContent;
+}
+
+function generateDocument() {
+    const content = generateContent();
+    
+    const doc = new Document({
+        styles: {
+            default: {
+                document: {
+                    run: { font: "Arial", size: 22 }
+                }
+            }
+        },
+        sections: [{
+            properties: {
+                page: {
+                    margin: { top: 1440, right: 1440, bottom: 1440, left: 1440 },
+                    pageNumbers: { start: 1 }
+                }
+            },
+            headers: {
+                default: new Header({
+                    children: [
+                        new Paragraph({
+                            alignment: AlignmentType.RIGHT,
+                            children: [
+                                new TextRun({
+                                    text: "Fingerprint Grouping Report",
+                                    size: 18,
+                                    color: "999999",
+                                    font: "Arial"
+                                })
+                            ]
+                        })
+                    ]
+                })
+            },
+            footers: {
+                default: new Footer({
+                    children: [
+                        new Paragraph({
+                            alignment: AlignmentType.CENTER,
+                            children: [
+                                new TextRun({ text: "Page ", size: 18, color: "999999", font: "Arial" }),
+                                new TextRun({ children: [PageNumber.CURRENT], size: 18, color: "999999", font: "Arial" }),
+                                new TextRun({ text: " of ", size: 18, color: "999999", font: "Arial" }),
+                                new TextRun({ children: [PageNumber.TOTAL_PAGES], size: 18, color: "999999", font: "Arial" })
+                            ]
+                        })
+                    ]
+                })
+            },
+            children: content
+        }]
+    });
+    
+    const outputFile = process.argv[2] || 'report.docx';
+    Packer.toBuffer(doc).then(buffer => {
+        fs.writeFileSync(outputFile, buffer);
+        console.log('Document generated: ' + outputFile);
+    });
+}
+
+generateDocument();
+'''
+
+
+# ============================================================================
+# MAIN EXECUTION
+# ============================================================================
 
 def main():
-    parser = argparse.ArgumentParser(description='Generate LLM-powered insights from fingerprint data')
-    parser.add_argument('--input', '-i', default='fingerprint_report.json', help='Input JSON file')
-    parser.add_argument('--output', '-o', default='insights_report.json', help='Output insights JSON file')
-    parser.add_argument('--model', '-m', default='llama3.2', help='Ollama model to use')
+    parser = argparse.ArgumentParser(
+        description='Generate Fingerprint Grouping Report from CSV data',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+    python report.py --input data.csv --output report.docx
+    python report.py --sample --output test_report.docx
+    
+Required CSV columns:
+    fingerprint, same_device_fingerprints, priv_base_apps, 
+    priv_var_apps, build_type, device
+        """
+    )
+    parser.add_argument('--input', '-i', help='Input CSV file path')
+    parser.add_argument('--output', '-o', default='report.docx', help='Output Word document path')
+    parser.add_argument('--sample', '-s', action='store_true', help='Use sample data for testing')
     
     args = parser.parse_args()
     
-    print("="*60)
-    print("LLM-POWERED INSIGHTS GENERATOR")
-    print("="*60)
+    print("=" * 60)
+    print("FINGERPRINT GROUPING REPORT GENERATOR")
+    print("=" * 60)
     
-    # Load the processed data
-    print(f"\nLoading data from {args.input}...")
-    with open(args.input, 'r') as f:
-        report_data = json.load(f)
+    # Load data
+    if args.sample:
+        print("\nUsing sample data for testing...")
+        df = create_sample_data()
+    elif args.input:
+        print(f"\nLoading data from {args.input}...")
+        if not os.path.exists(args.input):
+            print(f"ERROR: File not found: {args.input}")
+            return 1
+        df = pd.read_csv(args.input)
+    else:
+        print("\nNo input specified. Use --sample for demo or --input for your CSV file.")
+        print("Using sample data for demonstration...")
+        df = create_sample_data()
     
-    # Generate insights
-    print("\nGenerating insights using Ollama...")
-    insights = generate_all_insights(report_data)
+    # Validate columns
+    required_columns = ['fingerprint', 'same_device_fingerprints', 'priv_base_apps', 
+                        'priv_var_apps', 'build_type', 'device']
+    missing_columns = [col for col in required_columns if col not in df.columns]
+    if missing_columns:
+        print(f"ERROR: Missing required columns: {missing_columns}")
+        print(f"Available columns: {list(df.columns)}")
+        return 1
     
-    # Save insights
-    print(f"\nSaving insights to {args.output}...")
-    with open(args.output, 'w') as f:
-        json.dump(insights, f, indent=2)
+    print(f"\nLoaded {len(df)} rows")
+    print(f"Columns: {list(df.columns)}")
     
-    print("\n" + "="*60)
-    print("INSIGHTS GENERATION COMPLETE")
-    print("="*60)
+    # Process data
+    print("\n" + "-" * 60)
+    print("PROCESSING DATA...")
+    print("-" * 60)
     
-    # Print summary
-    for insight in insights['device_insights']:
-        print(f"\n--- {insight['device']} / {insight['build_type']} ---")
-        print(f"Combinations: {insight['statistics']['total_combinations']}")
-        print(f"Unique Base Apps: {insight['statistics']['priv_base_apps']['total_unique']}")
-        print(f"Unique Var Apps: {insight['statistics']['priv_var_apps']['total_unique']}")
-        print(f"\nLLM Insight Preview:")
-        print(insight['llm_insight'][:500] + "..." if len(insight['llm_insight']) > 500 else insight['llm_insight'])
+    results = process_fingerprint_data(df)
+    report_sections = generate_report_sections(results)
+    
+    # Prepare data for JS
+    report_data = {
+        'results': results,
+        'report_sections': report_sections
+    }
+    
+    # Write JSON for JS consumption
+    json_path = 'report_data.json'
+    with open(json_path, 'w') as f:
+        json.dump(report_data, f, indent=2)
+    print(f"\nData exported to {json_path}")
+    
+    # Write JS file
+    js_path = 'generate_report.js'
+    with open(js_path, 'w') as f:
+        f.write(get_js_generator_code())
+    print(f"JS generator written to {js_path}")
+    
+    # Run JS to generate Word document
+    print("\n" + "-" * 60)
+    print("GENERATING WORD DOCUMENT...")
+    print("-" * 60)
+    
+    try:
+        result = subprocess.run(
+            ['node', js_path, args.output],
+            capture_output=True,
+            text=True,
+            timeout=60
+        )
+        
+        if result.returncode == 0:
+            print(result.stdout)
+            print(f"\n✓ Report generated successfully: {args.output}")
+        else:
+            print(f"ERROR running Node.js: {result.stderr}")
+            return 1
+            
+    except FileNotFoundError:
+        print("ERROR: Node.js not found. Please install Node.js to generate Word documents.")
+        print("The JSON data has been saved to report_data.json")
+        return 1
+    except subprocess.TimeoutExpired:
+        print("ERROR: Document generation timed out")
+        return 1
+    
+    # Cleanup temp files (optional - comment out to keep them)
+    # os.remove(json_path)
+    # os.remove(js_path)
+    
+    print("\n" + "=" * 60)
+    print("SUMMARY")
+    print("=" * 60)
+    print(f"Total devices: {len(results)}")
+    print(f"Total sections: {len(report_sections)}")
+    total_combos = sum(len(s['combinations']) for s in report_sections)
+    print(f"Total combinations: {total_combos}")
+    print(f"Output file: {args.output}")
+    
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    exit(main())
