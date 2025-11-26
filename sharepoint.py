@@ -233,25 +233,38 @@ def create_stats_chart(stats: Dict, output_path: str) -> str:
         return base64.b64encode(f.read()).decode('utf-8')
 
 
-def generate_all_statistics(df: pd.DataFrame) -> Tuple[Dict, Dict[str, Dict], List[str]]:
-    """Generate overall and per-device statistics with charts."""
+def generate_all_statistics(df: pd.DataFrame) -> Tuple[Dict, Dict[str, Dict], Dict[str, Dict[str, Dict]], List]:
+    """Generate overall, per-device, and per-build-type->device statistics with charts."""
     charts = []
     
     # Overall statistics
     overall_stats = compute_statistics(df, "Overall")
-    overall_chart = create_stats_chart(overall_stats, '/tmp/overall_chart.png')
-    charts.append(('Overall', overall_chart))
+    charts.append(('Overall', create_stats_chart(overall_stats, '/tmp/overall_chart.png')))
     
-    # Per-device statistics
+    # Per-device statistics (kept for backward compatibility)
     device_stats = {}
     for device in df['device'].unique():
         device_df = df[df['device'] == device]
         stats = compute_statistics(device_df, f"Device: {device}")
         device_stats[device] = stats
-        chart = create_stats_chart(stats, f'/tmp/{device}_chart.png')
-        charts.append((device, chart))
     
-    return overall_stats, device_stats, charts
+    # Per-build-type -> per-device statistics
+    build_type_stats = {}
+    for build_type in df['build_type'].unique():
+        build_type_stats[build_type] = {}
+        bt_df = df[df['build_type'] == build_type]
+        
+        for device in bt_df['device'].unique():
+            device_bt_df = bt_df[bt_df['device'] == device]
+            stats = compute_statistics(device_bt_df, f"{device} / {build_type}")
+            build_type_stats[build_type][device] = stats
+            
+            # Create chart for this device/build_type combo
+            chart_key = f"{device}_{build_type}"
+            chart = create_stats_chart(stats, f'/tmp/{chart_key}_chart.png')
+            charts.append((chart_key, chart))
+    
+    return overall_stats, device_stats, build_type_stats, charts
 
 
 # ============================================================================
@@ -265,14 +278,15 @@ def process_fingerprint_data(df: pd.DataFrame) -> Dict:
     
     # Generate statistics
     print("\nGENERATING STATISTICS...")
-    overall_stats, device_stats, charts = generate_all_statistics(df)
+    overall_stats, device_stats, build_type_stats, charts = generate_all_statistics(df)
     
     results = {
         '_statistics': {
             'overall': overall_stats,
             'per_device': device_stats,
             'charts': charts
-        }
+        },
+        '_build_type_stats': build_type_stats
     }
     
     print(f"\nPROCESSING COMBINATIONS...")
@@ -446,10 +460,10 @@ function headerCell(text, width) {
     });
 }
 
-function dataCell(content, width, alt = false) {
+function dataCell(content, width, alt = false, stripNames = true) {
     const children = Array.isArray(content) && content.length > 0
         ? content.map(item => new Paragraph({ spacing: { before: 40, after: 40 },
-            children: [new TextRun({ text: "• " + item.split('.').pop(), size: 20, color: colors.text, font: "Arial" })] }))
+            children: [new TextRun({ text: "• " + (stripNames ? item : item), size: 20, color: colors.text, font: "Arial" })] }))
         : [new Paragraph({ alignment: AlignmentType.CENTER,
             children: [new TextRun({ text: "—", size: 20, color: "999999", font: "Arial" })] })];
     return new TableCell({ borders: cellBorders, width: { size: width, type: WidthType.DXA },
@@ -487,7 +501,7 @@ function createTop10Table(title, items) {
 function createAppsTable(base, variant) {
     return new Table({ columnWidths: [4680, 4680], rows: [
         new TableRow({ children: [headerCell("Priv Base Apps", 4680), headerCell("Priv Variant Apps", 4680)] }),
-        new TableRow({ children: [dataCell(base, 4680), dataCell(variant, 4680)] })
+        new TableRow({ children: [dataCell(base, 4680, false, false), dataCell(variant, 4680, false, false)] })
     ]});
 }
 
@@ -536,22 +550,32 @@ function generateContent() {
     content.push(sectionTitle("Top 10 FP vs SDP Combinations", 2));
     content.push(createTop10Table("Combination", stats.overall.top_10_combos));
     
-    // Per-Device Statistics
+    // Per-Device Per-Build Statistics (devices grouped under each build type)
     content.push(new Paragraph({ children: [new PageBreak()] }));
-    content.push(sectionTitle("📱 Per-Device Statistics", 1));
+    content.push(sectionTitle("📱 Per-Device Per-Build Statistics", 1));
     
-    for (const [device, deviceStats] of Object.entries(stats.per_device)) {
-        content.push(sectionTitle("Device: " + device, 2));
-        content.push(createStatsTable(deviceStats));
+    // Get all build types and organize by build type -> device
+    const buildTypeStats = data._build_type_stats || {};
+    
+    for (const [buildType, devices] of Object.entries(buildTypeStats)) {
+        content.push(sectionTitle("Build Type: " + buildType, 2));
         
-        const deviceChart = stats.charts.find(c => c[0] === device);
-        if (deviceChart) {
-            content.push(new Paragraph({ alignment: AlignmentType.CENTER, spacing: { before: 100 }, children: [
-                new ImageRun({ type: "png", data: Buffer.from(deviceChart[1], 'base64'),
-                    transformation: { width: 550, height: 180 } })
-            ]}));
+        for (const [device, deviceStats] of Object.entries(devices)) {
+            content.push(new Paragraph({ spacing: { before: 200, after: 100 },
+                children: [new TextRun({ text: "Device: " + device, bold: true, size: 24, color: colors.secondary, font: "Arial" })] }));
+            content.push(createStatsTable(deviceStats));
+            
+            // Find chart for this device/build combo
+            const chartKey = device + "_" + buildType;
+            const deviceChart = stats.charts.find(c => c[0] === chartKey);
+            if (deviceChart) {
+                content.push(new Paragraph({ alignment: AlignmentType.CENTER, spacing: { before: 100 }, children: [
+                    new ImageRun({ type: "png", data: Buffer.from(deviceChart[1], 'base64'),
+                        transformation: { width: 550, height: 180 } })
+                ]}));
+            }
+            content.push(divider());
         }
-        content.push(divider());
     }
     
     // Device Details
@@ -559,7 +583,7 @@ function generateContent() {
     content.push(sectionTitle("📋 Detailed Combinations", 1));
     
     for (const [device, buildTypes] of Object.entries(data)) {
-        if (device === '_statistics') continue;
+        if (device === '_statistics' || device === '_build_type_stats') continue;
         
         content.push(sectionTitle("Device: " + device, 2));
         
@@ -568,10 +592,10 @@ function generateContent() {
                 children: [
                     new TextRun({ text: "Build Type: ", bold: true, size: 24, color: colors.secondary, font: "Arial" }),
                     new TextRun({ text: buildType, size: 24, color: colors.text, font: "Arial" }),
-                    new TextRun({ text: "  (" + btData.combinations.length + " combinations)", size: 20, color: "888888", font: "Arial" })
+                    new TextRun({ text: "  (" + (btData.combinations ? btData.combinations.length : 0) + " combinations)", size: 20, color: "888888", font: "Arial" })
                 ]}));
             
-            for (const combo of btData.combinations) {
+            for (const combo of (btData.combinations || [])) {
                 content.push(new Paragraph({ spacing: { before: 150, after: 80 },
                     children: [
                         new TextRun({ text: "FP: ", bold: true, size: 22, color: colors.secondary, font: "Arial" }),
@@ -663,6 +687,13 @@ def main():
                 'charts': value['charts']
             }
             export_data['_statistics'] = export_stats
+        elif key == '_build_type_stats':
+            # Export build_type -> device stats
+            export_bt_stats = {}
+            for bt, devices in value.items():
+                export_bt_stats[bt] = {d: {k: v for k, v in s.items() if k not in ['base_counter', 'var_counter']} 
+                                       for d, s in devices.items()}
+            export_data['_build_type_stats'] = export_bt_stats
         else:
             export_data[key] = value
     
