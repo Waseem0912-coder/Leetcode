@@ -2,8 +2,10 @@
 Fingerprint Grouping Report Generator (Non-LLM Version)
 
 Features:
-- Frequentist statistics and graphs (overall + per device)
+- Frequentist statistics and graphs (overall + per device per build)
 - Top 10 apps and top 10 repeating combinations
+- Device summary with build type counts and app set comparison
+- Full fingerprint strings displayed
 - Clean, professional Word document output
 
 Usage:
@@ -18,7 +20,7 @@ import argparse
 import os
 import base64
 from collections import Counter
-from typing import Dict, List, Any, Tuple
+from typing import Dict, List, Any, Tuple, Set
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
@@ -184,7 +186,7 @@ def create_stats_chart(stats: Dict, output_path: str) -> str:
     # Chart 1: Top 10 Base Apps
     if stats['top_10_base']:
         apps, counts = zip(*stats['top_10_base'][:10])
-        apps = [a.split('.')[-1][:15] for a in apps]  # Shorten names
+        apps = [a.split('.')[-1][:15] for a in apps]  # Shorten for chart only
         y_pos = np.arange(len(apps))
         axes[0].barh(y_pos, counts, color='#2E75B6')
         axes[0].set_yticks(y_pos)
@@ -268,11 +270,70 @@ def generate_all_statistics(df: pd.DataFrame) -> Tuple[Dict, Dict[str, Dict], Di
 
 
 # ============================================================================
+# BUILD TYPE COMPARISON
+# ============================================================================
+
+def compare_build_type_apps(device_data: Dict[str, Dict]) -> Dict:
+    """
+    Compare apps across build types for a device.
+    Check if app sets are equal, subset, or different.
+    """
+    build_types = list(device_data.keys())
+    if len(build_types) < 2:
+        return {'comparison': 'Single build type', 'details': []}
+    
+    # Collect all apps per build type
+    build_apps = {}
+    for bt in build_types:
+        all_base = set()
+        all_var = set()
+        for combo in device_data[bt].get('combinations', []):
+            all_base.update(combo.get('priv_base_apps', []))
+            all_var.update(combo.get('priv_var_apps', []))
+        build_apps[bt] = {
+            'base': all_base,
+            'var': all_var,
+            'all': all_base | all_var
+        }
+    
+    # Compare pairs
+    comparisons = []
+    sorted_bts = sorted(build_types, key=lambda x: len(build_apps[x]['all']), reverse=True)
+    
+    is_subset_chain = True
+    for i in range(len(sorted_bts) - 1):
+        bt1, bt2 = sorted_bts[i], sorted_bts[i + 1]
+        apps1, apps2 = build_apps[bt1]['all'], build_apps[bt2]['all']
+        
+        if apps1 == apps2:
+            comparisons.append(f"{bt1} = {bt2} (equal)")
+        elif apps2.issubset(apps1):
+            comparisons.append(f"{bt1} ⊇ {bt2} (superset)")
+        elif apps1.issubset(apps2):
+            comparisons.append(f"{bt1} ⊆ {bt2} (subset)")
+        else:
+            comparisons.append(f"{bt1} ≠ {bt2} (different)")
+            is_subset_chain = False
+    
+    if is_subset_chain:
+        summary = "Build types have equal or subset app relationships"
+    else:
+        summary = "Build types have different app sets"
+    
+    return {
+        'comparison': summary,
+        'details': comparisons,
+        'build_apps': {bt: {'base_count': len(v['base']), 'var_count': len(v['var'])} 
+                       for bt, v in build_apps.items()}
+    }
+
+
+# ============================================================================
 # MAIN PROCESSING
 # ============================================================================
 
 def process_fingerprint_data(df: pd.DataFrame) -> Dict:
-    """Process data into hierarchical structure."""
+    """Process data into hierarchical structure with summaries."""
     print("\nPREPROCESSING...")
     df = preprocess_dataframe(df)
     
@@ -291,14 +352,17 @@ def process_fingerprint_data(df: pd.DataFrame) -> Dict:
     
     print(f"\nPROCESSING COMBINATIONS...")
     for device in df['device'].unique():
-        results[device] = {}
+        results[device] = {'_build_types': {}, '_summary': {}}
         device_df = df[df['device'] == device]
+        
+        # Build type row counts
+        build_type_counts = {}
         
         for build_type in device_df['build_type'].unique():
             build_df = device_df[device_df['build_type'] == build_type]
             
-            fps = list(build_df['fingerprint_parsed'].unique())
-            sdps = list(build_df['same_device_fingerprint_parsed'].unique())
+            # Count total rows for this build type
+            build_type_counts[build_type] = len(build_df)
             
             combinations = []
             seen = set()
@@ -315,17 +379,25 @@ def process_fingerprint_data(df: pd.DataFrame) -> Dict:
                 combinations.append({
                     'fingerprint_parsed': fp,
                     'same_device_fingerprint_parsed': sdp,
+                    'fingerprint_full': row['fingerprint'],
+                    'same_device_fingerprint_full': row['same_device_fingerprints'],
                     'priv_base_apps': row['priv_base_apps_list'],
                     'priv_var_apps': row['priv_var_apps_list']
                 })
             
-            results[device][build_type] = {
-                'unique_fps': fps,
-                'unique_sdps': sdps,
+            results[device]['_build_types'][build_type] = {
+                'row_count': len(build_df),
                 'combinations': combinations
             }
             
-            print(f"  {device}/{build_type}: {len(combinations)} combinations")
+            print(f"  {device}/{build_type}: {len(combinations)} combinations ({len(build_df)} rows)")
+        
+        # Store build type counts in summary
+        results[device]['_summary']['build_type_counts'] = build_type_counts
+        
+        # Compare build types
+        comparison = compare_build_type_apps(results[device]['_build_types'])
+        results[device]['_summary']['comparison'] = comparison
     
     return results
 
@@ -349,8 +421,8 @@ def create_sample_data() -> pd.DataFrame:
             "google/sunfish/sunfish:11/RQ3A.210805",
             "google/redfin/redfin:11/RQ3A.210705",
             "google/redfin/redfin:11/RQ3A.210705",
-            "google/sunfish/sunfish:11/RQ3A.210805",  # Self-comparison test
-            "google/catfish/catfish:11/RQ3A.999999",  # Duplicate test
+            "google/sunfish/sunfish:11/RQ3A.210805",
+            "google/catfish/catfish:11/RQ3A.999999",
         ],
         'same_device_fingerprints': [
             "google/oriole/oriole:12/SQ1D.220105",
@@ -364,8 +436,8 @@ def create_sample_data() -> pd.DataFrame:
             "google/raven/raven:12/SQ1D.220205",
             "google/oriole/oriole:12/SQ1D.220105",
             "google/panther/panther:13/TQ1A.230305",
-            "google/sunfish/sunfish:12/SQ1D.220105",  # ISH vs ISH
-            "google/oriole/oriole:12/SQ1D.220105",    # ISH vs OLE duplicate
+            "google/sunfish/sunfish:12/SQ1D.220105",
+            "google/oriole/oriole:12/SQ1D.220105",
         ],
         'priv_base_apps': [
             "['com.google.camera', 'com.google.dialer']", 
@@ -401,73 +473,82 @@ def create_sample_data() -> pd.DataFrame:
         'device': ['Pixel_4a'] * 13
     }
     
+    # Add Galaxy device data
     data2 = {
         'fingerprint': [
             "samsung/beyond/beyond1:10/QP1A.190711",
-            "samsung/canvas/canvas:10/QP1A.190811",
+            "samsung/canvas/canvas:10/QP1A.190711",
             "samsung/beyond/beyond1:10/QP1A.190711",
-            "samsung/canvas/canvas:10/QP1A.190811"
+            "samsung/canvas/canvas:10/QP1A.190711",
         ],
         'same_device_fingerprints': [
             "samsung/gts7/gts7xl:11/RP1A.200720",
             "samsung/gts7/gts7xl:11/RP1A.200720",
-            "samsung/a52/a52q:11/RP1A.200820",
-            "samsung/a52/a52q:11/RP1A.200820"
+            "samsung/a52/a52q:11/RP1A.200720",
+            "samsung/a52/a52q:11/RP1A.200720",
         ],
         'priv_base_apps': [
-            "['com.samsung.camera']", 
-            "['com.samsung.gallery', 'com.samsung.notes']", 
-            "['com.samsung.browser']", 
-            "['com.samsung.health']"
+            "['com.samsung.camera']",
+            "['com.samsung.gallery', 'com.samsung.notes']",
+            "['com.samsung.browser']",
+            "['com.samsung.health']",
         ],
         'priv_var_apps': [
-            "['com.sec.android.app.launcher']", 
-            "['com.sec.android.app.clock']", 
-            "['com.sec.android.app.calculator']", 
-            "['com.sec.android.app.music']"
+            "['com.sec.android.app.launcher']",
+            "['com.sec.android.app.clock']",
+            "['com.sec.android.app.calculator']",
+            "['com.sec.android.app.music']",
         ],
         'build_type': ['eng'] * 4,
         'device': ['Galaxy_S10'] * 4
     }
     
-    return pd.concat([pd.DataFrame(data), pd.DataFrame(data2)], ignore_index=True)
+    df1 = pd.DataFrame(data)
+    df2 = pd.DataFrame(data2)
+    return pd.concat([df1, df2], ignore_index=True)
 
 
 # ============================================================================
-# JAVASCRIPT GENERATOR
+# JAVASCRIPT CODE
 # ============================================================================
 
 def get_js_code() -> str:
     return '''
 const { Document, Packer, Paragraph, TextRun, Table, TableRow, TableCell, Header, Footer,
-        AlignmentType, BorderStyle, WidthType, ShadingType, VerticalAlign, PageNumber,
-        PageBreak, ImageRun } = require('docx');
+        AlignmentType, BorderStyle, WidthType, ShadingType, PageNumber, PageBreak, ImageRun,
+        HeadingLevel, TableOfContents } = require('docx');
 const fs = require('fs');
 
 const data = JSON.parse(fs.readFileSync('report_data.json', 'utf8'));
-const colors = { primary: "1F4E79", secondary: "2E75B6", accent: "5B9BD5", 
-                 headerBg: "D6E3F0", border: "B4C6E7", alt: "F2F7FB", text: "333333" };
+const colors = { primary: "1F4E79", secondary: "2E75B6", border: "B4C6E7", 
+                 headerBg: "D6E3F0", altRow: "F2F7FB", text: "333333",
+                 summaryBg: "E8F4E8", summaryBorder: "70AD47" };
 
 const border = { style: BorderStyle.SINGLE, size: 8, color: colors.border };
 const cellBorders = { top: border, bottom: border, left: border, right: border };
 
 function headerCell(text, width) {
     return new TableCell({
-        borders: cellBorders, width: { size: width, type: WidthType.DXA },
+        borders: cellBorders,
+        width: { size: width, type: WidthType.DXA },
         shading: { fill: colors.headerBg, type: ShadingType.CLEAR },
-        children: [new Paragraph({ alignment: AlignmentType.CENTER, 
-            children: [new TextRun({ text, bold: true, size: 22, color: colors.primary, font: "Arial" })] })]
+        children: [new Paragraph({ alignment: AlignmentType.CENTER,
+            children: [new TextRun({ text: text, bold: true, size: 22, color: colors.primary, font: "Arial" })] })]
     });
 }
 
-function dataCell(content, width, alt = false, stripNames = true) {
+function dataCell(content, width, alt = false) {
     const children = Array.isArray(content) && content.length > 0
         ? content.map(item => new Paragraph({ spacing: { before: 40, after: 40 },
-            children: [new TextRun({ text: "• " + (stripNames ? item : item), size: 20, color: colors.text, font: "Arial" })] }))
+            children: [new TextRun({ text: "• " + String(item), size: 20, color: colors.text, font: "Arial" })] }))
         : [new Paragraph({ alignment: AlignmentType.CENTER,
             children: [new TextRun({ text: "—", size: 20, color: "999999", font: "Arial" })] })];
-    return new TableCell({ borders: cellBorders, width: { size: width, type: WidthType.DXA },
-        shading: alt ? { fill: colors.alt, type: ShadingType.CLEAR } : undefined, children });
+    return new TableCell({
+        borders: cellBorders,
+        width: { size: width, type: WidthType.DXA },
+        shading: alt ? { fill: colors.altRow, type: ShadingType.CLEAR } : undefined,
+        children: children
+    });
 }
 
 function createStatsTable(stats) {
@@ -478,43 +559,101 @@ function createStatsTable(stats) {
         ["Avg Base Apps/Row", stats.avg_base_per_row.toFixed(2)],
         ["Avg Var Apps/Row", stats.avg_var_per_row.toFixed(2)]
     ];
-    return new Table({ columnWidths: [4680, 4680], rows: [
-        new TableRow({ children: [headerCell("Metric", 4680), headerCell("Value", 4680)] }),
-        ...rows.map((r, i) => new TableRow({ children: [
-            dataCell([r[0]], 4680, i % 2 === 1), dataCell([String(r[1])], 4680, i % 2 === 1)
-        ]}))
-    ]});
+    return new Table({
+        columnWidths: [4680, 4680],
+        rows: [
+            new TableRow({ children: [headerCell("Metric", 4680), headerCell("Value", 4680)] }),
+            ...rows.map((row, i) => new TableRow({
+                children: [dataCell([row[0]], 4680, i % 2 === 1), dataCell([String(row[1])], 4680, i % 2 === 1)]
+            }))
+        ]
+    });
 }
 
 function createTop10Table(title, items) {
-    if (!items || items.length === 0) return new Paragraph({ children: [new TextRun({ text: "No data", italics: true })] });
-    return new Table({ columnWidths: [1000, 5680, 2680], rows: [
-        new TableRow({ children: [headerCell("#", 1000), headerCell(title, 5680), headerCell("Count", 2680)] }),
-        ...items.slice(0, 10).map((item, i) => new TableRow({ children: [
-            dataCell([String(i + 1)], 1000, i % 2 === 1),
-            dataCell([item[0].split('.').pop()], 5680, i % 2 === 1),
-            dataCell([String(item[1])], 2680, i % 2 === 1)
-        ]}))
-    ]});
+    if (!items || items.length === 0) {
+        return new Paragraph({ children: [new TextRun({ text: "No data available", italics: true, size: 20, color: "888888" })] });
+    }
+    return new Table({
+        columnWidths: [1000, 5680, 2680],
+        rows: [
+            new TableRow({ children: [headerCell("#", 1000), headerCell(title, 5680), headerCell("Count", 2680)] }),
+            ...items.slice(0, 10).map((item, i) => new TableRow({
+                children: [
+                    dataCell([String(i + 1)], 1000, i % 2 === 1),
+                    dataCell([String(item[0])], 5680, i % 2 === 1),
+                    dataCell([String(item[1])], 2680, i % 2 === 1)
+                ]
+            }))
+        ]
+    });
 }
 
-function createAppsTable(base, variant) {
-    return new Table({ columnWidths: [4680, 4680], rows: [
-        new TableRow({ children: [headerCell("Priv Base Apps", 4680), headerCell("Priv Variant Apps", 4680)] }),
-        new TableRow({ children: [dataCell(base, 4680, false, false), dataCell(variant, 4680, false, false)] })
-    ]});
-}
-
-function divider() {
-    return new Paragraph({ spacing: { before: 200, after: 200 },
-        border: { bottom: { style: BorderStyle.SINGLE, size: 4, color: colors.border } },
-        children: [new TextRun({ text: "" })] });
+function createAppsTable(baseApps, varApps) {
+    return new Table({
+        columnWidths: [4680, 4680],
+        rows: [
+            new TableRow({ children: [headerCell("Priv Base Apps", 4680), headerCell("Priv Variant Apps", 4680)] }),
+            new TableRow({ children: [dataCell(baseApps, 4680), dataCell(varApps, 4680)] })
+        ]
+    });
 }
 
 function sectionTitle(text, level = 1) {
     const sizes = { 1: 36, 2: 28, 3: 24 };
-    return new Paragraph({ spacing: { before: 300, after: 150 },
-        children: [new TextRun({ text, bold: true, size: sizes[level], color: colors.primary, font: "Arial" })] });
+    const headingLevels = { 1: HeadingLevel.HEADING_1, 2: HeadingLevel.HEADING_2, 3: HeadingLevel.HEADING_3 };
+    return new Paragraph({
+        heading: headingLevels[level] || HeadingLevel.HEADING_3,
+        spacing: { before: 300, after: 150 },
+        children: [new TextRun({ text: text, bold: true, size: sizes[level] || 24, color: colors.primary, font: "Arial" })]
+    });
+}
+
+function divider() {
+    return new Paragraph({
+        spacing: { before: 200, after: 200 },
+        border: { bottom: { style: BorderStyle.SINGLE, size: 4, color: colors.border } },
+        children: []
+    });
+}
+
+function createSummaryBox(summary) {
+    const children = [];
+    
+    // Build type counts
+    if (summary.build_type_counts) {
+        children.push(new Paragraph({ spacing: { before: 100, after: 50 },
+            children: [new TextRun({ text: "Build Type Row Counts:", bold: true, size: 22, color: colors.primary, font: "Arial" })] }));
+        
+        for (const [bt, count] of Object.entries(summary.build_type_counts)) {
+            children.push(new Paragraph({ spacing: { before: 30, after: 30 },
+                indent: { left: 360 },
+                children: [new TextRun({ text: bt + ": " + count + " rows", size: 20, color: colors.text, font: "Arial" })] }));
+        }
+    }
+    
+    // Comparison
+    if (summary.comparison) {
+        children.push(new Paragraph({ spacing: { before: 150, after: 50 },
+            children: [new TextRun({ text: "Build Type Comparison:", bold: true, size: 22, color: colors.primary, font: "Arial" })] }));
+        
+        const isGood = summary.comparison.comparison.includes("equal or subset");
+        children.push(new Paragraph({ spacing: { before: 30, after: 30 },
+            indent: { left: 360 },
+            shading: { fill: isGood ? "E8F4E8" : "FFF3CD", type: ShadingType.CLEAR },
+            children: [new TextRun({ text: summary.comparison.comparison, size: 20, 
+                color: isGood ? "2E7D32" : "856404", font: "Arial" })] }));
+        
+        if (summary.comparison.details && summary.comparison.details.length > 0) {
+            for (const detail of summary.comparison.details) {
+                children.push(new Paragraph({ spacing: { before: 20, after: 20 },
+                    indent: { left: 720 },
+                    children: [new TextRun({ text: "• " + detail, size: 18, color: "666666", font: "Arial" })] }));
+            }
+        }
+    }
+    
+    return children;
 }
 
 function generateContent() {
@@ -522,18 +661,28 @@ function generateContent() {
     const stats = data._statistics;
     
     // Title
-    content.push(new Paragraph({ alignment: AlignmentType.CENTER, spacing: { before: 400, after: 200 },
+    content.push(new Paragraph({ alignment: AlignmentType.CENTER, spacing: { before: 400, after: 100 },
         children: [new TextRun({ text: "Fingerprint Grouping Report", bold: true, size: 48, color: colors.primary, font: "Arial" })] }));
     content.push(new Paragraph({ alignment: AlignmentType.CENTER, spacing: { after: 400 },
-        children: [new TextRun({ text: new Date().toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' }), size: 22, color: "666666", font: "Arial" })] }));
+        children: [new TextRun({ text: new Date().toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' }),
+            size: 22, color: "666666", font: "Arial" })] }));
+    
+    // Table of Contents
+    content.push(new Paragraph({ spacing: { before: 200, after: 100 },
+        children: [new TextRun({ text: "Table of Contents", bold: true, size: 28, color: colors.primary, font: "Arial" })] }));
+    content.push(new TableOfContents("Table of Contents", {
+        hyperlink: true,
+        headingStyleRange: "1-3"
+    }));
+    content.push(new Paragraph({ spacing: { after: 200 },
+        children: [new TextRun({ text: "(Right-click and select 'Update Field' to refresh)", italics: true, size: 18, color: "888888", font: "Arial" })] }));
+    
     content.push(divider());
     
-    // Overall Statistics Section
-    content.push(sectionTitle("📊 Overall Statistics", 1));
+    // Overall Statistics
+    content.push(sectionTitle("Overall Statistics", 1));
     content.push(createStatsTable(stats.overall));
-    content.push(new Paragraph({ spacing: { before: 100, after: 100 }, children: [] }));
     
-    // Overall Chart
     const overallChart = stats.charts.find(c => c[0] === 'Overall');
     if (overallChart) {
         content.push(new Paragraph({ alignment: AlignmentType.CENTER, children: [
@@ -550,13 +699,11 @@ function generateContent() {
     content.push(sectionTitle("Top 10 FP vs SDP Combinations", 2));
     content.push(createTop10Table("Combination", stats.overall.top_10_combos));
     
-    // Per-Device Per-Build Statistics (devices grouped under each build type)
+    // Per-Device Per-Build Statistics
     content.push(new Paragraph({ children: [new PageBreak()] }));
-    content.push(sectionTitle("📱 Per-Device Per-Build Statistics", 1));
+    content.push(sectionTitle("Per-Device Per-Build Statistics", 1));
     
-    // Get all build types and organize by build type -> device
     const buildTypeStats = data._build_type_stats || {};
-    
     for (const [buildType, devices] of Object.entries(buildTypeStats)) {
         content.push(sectionTitle("Build Type: " + buildType, 2));
         
@@ -565,7 +712,6 @@ function generateContent() {
                 children: [new TextRun({ text: "Device: " + device, bold: true, size: 24, color: colors.secondary, font: "Arial" })] }));
             content.push(createStatsTable(deviceStats));
             
-            // Find chart for this device/build combo
             const chartKey = device + "_" + buildType;
             const deviceChart = stats.charts.find(c => c[0] === chartKey);
             if (deviceChart) {
@@ -578,35 +724,68 @@ function generateContent() {
         }
     }
     
-    // Device Details
+    // Detailed Combinations
     content.push(new Paragraph({ children: [new PageBreak()] }));
-    content.push(sectionTitle("📋 Detailed Combinations", 1));
+    content.push(sectionTitle("Detailed Combinations", 1));
     
-    for (const [device, buildTypes] of Object.entries(data)) {
-        if (device === '_statistics' || device === '_build_type_stats') continue;
+    for (const [device, deviceData] of Object.entries(data)) {
+        if (device.startsWith('_')) continue;
         
         content.push(sectionTitle("Device: " + device, 2));
         
+        // Device Summary
+        if (deviceData._summary) {
+            content.push(new Paragraph({ spacing: { before: 100, after: 50 },
+                shading: { fill: colors.summaryBg, type: ShadingType.CLEAR },
+                border: { left: { style: BorderStyle.SINGLE, size: 24, color: colors.summaryBorder } },
+                children: [new TextRun({ text: "Summary", bold: true, size: 24, color: colors.summaryBorder, font: "Arial" })] }));
+            content.push(...createSummaryBox(deviceData._summary));
+        }
+        
+        content.push(divider());
+        
+        // Build Types
+        const buildTypes = deviceData._build_types || {};
         for (const [buildType, btData] of Object.entries(buildTypes)) {
+            const comboCount = btData.combinations ? btData.combinations.length : 0;
+            
             content.push(new Paragraph({ spacing: { before: 200, after: 100 },
                 children: [
                     new TextRun({ text: "Build Type: ", bold: true, size: 24, color: colors.secondary, font: "Arial" }),
                     new TextRun({ text: buildType, size: 24, color: colors.text, font: "Arial" }),
-                    new TextRun({ text: "  (" + (btData.combinations ? btData.combinations.length : 0) + " combinations)", size: 20, color: "888888", font: "Arial" })
+                    new TextRun({ text: "  (" + comboCount + " combinations)", size: 20, color: "888888", font: "Arial" })
                 ]}));
             
             for (const combo of (btData.combinations || [])) {
-                content.push(new Paragraph({ spacing: { before: 150, after: 80 },
+                // FP | SDP header
+                content.push(new Paragraph({ spacing: { before: 150, after: 50 },
                     children: [
                         new TextRun({ text: "FP: ", bold: true, size: 22, color: colors.secondary, font: "Arial" }),
                         new TextRun({ text: combo.fingerprint_parsed, size: 22, color: colors.text, font: "Arial" }),
                         new TextRun({ text: "  |  SDP: ", bold: true, size: 22, color: colors.secondary, font: "Arial" }),
                         new TextRun({ text: combo.same_device_fingerprint_parsed, size: 22, color: colors.text, font: "Arial" })
                     ]}));
+                
+                // Full fingerprints
+                content.push(new Paragraph({ spacing: { before: 30, after: 30 },
+                    indent: { left: 360 },
+                    children: [
+                        new TextRun({ text: "Base: ", bold: true, size: 18, color: "666666", font: "Arial" }),
+                        new TextRun({ text: combo.fingerprint_full || "N/A", size: 18, color: "666666", font: "Arial" })
+                    ]}));
+                content.push(new Paragraph({ spacing: { before: 30, after: 80 },
+                    indent: { left: 360 },
+                    children: [
+                        new TextRun({ text: "Variant: ", bold: true, size: 18, color: "666666", font: "Arial" }),
+                        new TextRun({ text: combo.same_device_fingerprint_full || "N/A", size: 18, color: "666666", font: "Arial" })
+                    ]}));
+                
                 content.push(createAppsTable(combo.priv_base_apps || [], combo.priv_var_apps || []));
             }
             content.push(divider());
         }
+        
+        content.push(new Paragraph({ children: [new PageBreak()] }));
     }
     
     return content;
@@ -688,7 +867,6 @@ def main():
             }
             export_data['_statistics'] = export_stats
         elif key == '_build_type_stats':
-            # Export build_type -> device stats
             export_bt_stats = {}
             for bt, devices in value.items():
                 export_bt_stats[bt] = {d: {k: v for k, v in s.items() if k not in ['base_counter', 'var_counter']} 
